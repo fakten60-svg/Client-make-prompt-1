@@ -22,11 +22,14 @@
 namespace woke::jni {
 
 // Binds the parsed registry. Handles are resolved lazily on first use, so a member that no
-// module ever touches is never looked up.
-bool initialize(Mappings& registry) noexcept;
+// module ever touches is never looked up. Named bind/unbind rather than initialize/shutdown
+// because this layer shares the jni namespace with jni_context, where initialize() means
+// "find and attach to the JVM" - two functions with one name and different meanings is how
+// a boot order gets misread.
+void bind_registry(Mappings& registry) noexcept;
 
 // Releases every global ref this cache owns (classes and the java.lang loader bridge).
-void shutdown() noexcept;
+void unbind_registry() noexcept;
 
 // Returns nullptr - never a bogus handle - when a class or member cannot be resolved.
 [[nodiscard]] jclass class_of(std::string_view class_alias) noexcept;

@@ -35,9 +35,10 @@ woke::jni::Mappings g_mappings;
 using StepFn = bool (*)() noexcept;
 
 struct Step {
+    // 'requires' is a C++20 keyword, so the dependency field is named for what it holds.
     const char* name;
     StepFn run;
-    int requires; // index of a step that must have succeeded first, or -1
+    int requires_step; // index of a step that must have succeeded first, or -1
 };
 
 // ── Boot steps ───────────────────────────────────────────────────────────────────
@@ -111,7 +112,7 @@ bool start_jvm_bridge() noexcept {
         return false;
     }
 
-    (void)jni::reflection_cache::initialize(g_mappings);
+    jni::bind_registry(g_mappings);
 
     // A missing client instance is not a boot failure: it is the normal state when the DLL
     // is injected before the game reaches its first world. The worker loop retries.
@@ -182,22 +183,22 @@ void boot(HMODULE self) noexcept {
     (void)::QueryPerformanceCounter(&boot_start);
 
     bool step_ok[kStepCount] = {};
-    for (std::size_t index = 0; index < kStepCount; ++index) {
-        const Step& step = kBootSteps[index];
-        if (step.requires >= 0 && !step_ok[step.requires]) {
+    for (std::size_t step_index = 0; step_index < kStepCount; ++step_index) {
+        const Step& step = kBootSteps[step_index];
+        if (step.requires_step >= 0 && !step_ok[step.requires_step]) {
             WOKE_LOG_WARN("boot: %s skipped (depends on %s)", step.name,
-                kBootSteps[step.requires].name);
+                kBootSteps[step.requires_step].name);
             continue;
         }
 
         LARGE_INTEGER step_start{};
         (void)::QueryPerformanceCounter(&step_start);
-        step_ok[index] = step.run();
+        step_ok[step_index] = step.run();
         LARGE_INTEGER step_end{};
         (void)::QueryPerformanceCounter(&step_end);
 
         const double step_ms = elapsed_ms(step_start, step_end, frequency);
-        if (step_ok[index]) {
+        if (step_ok[step_index]) {
             WOKE_LOG_INFO("boot: %s ready (%.2f ms)", step.name, step_ms);
         } else {
             WOKE_LOG_WARN("boot: %s failed (%.2f ms) - continuing in degraded mode", step.name,
@@ -256,7 +257,7 @@ void shutdown() noexcept {
     // first, then the cache releases every class reference, then the threads detach.
 #if WOKE_HAVE_JNI
     game::shutdown();
-    jni::reflection_cache::shutdown();
+    jni::unbind_registry();
     jni::shutdown();
 #endif
 

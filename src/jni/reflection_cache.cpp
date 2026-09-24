@@ -329,14 +329,13 @@ jfieldID resolve_field(std::string_view class_alias, std::string_view member) {
 
 } // namespace
 
-bool initialize(Mappings& registry) noexcept {
+void bind_registry(Mappings& registry) noexcept {
     g_registry = &registry;
     g_stats = CacheStats{};
     g_lookup_warnings = 0;
-    return true;
 }
 
-void shutdown() noexcept {
+void unbind_registry() noexcept {
     JNIEnv* env = current_env();
 
     if (env != nullptr) {
@@ -401,7 +400,7 @@ jclass class_of(std::string_view class_alias) noexcept {
     if (env == nullptr) {
         return nullptr;
     }
-    return resolve_class(*env, *entry);
+    return resolve_class(env, *entry);
 }
 
 jmethodID method_of(std::string_view class_alias, std::string_view member) noexcept {
