@@ -31,6 +31,10 @@ void shutdown() noexcept;
 // True when both the client player and the client world are live, i.e. a world is loaded.
 [[nodiscard]] bool in_world() noexcept;
 
+// True when the client's player reference is set. Separate from in_world() so the frame
+// scheduler can publish a player transition that is genuinely its own signal.
+[[nodiscard]] bool has_player() noexcept;
+
 // Members the mapping asset failed to provide. Non-zero means the corresponding accessors
 // return `valid == false` forever and the modules that need them auto-disable.
 [[nodiscard]] std::size_t unresolved_handle_count() noexcept;

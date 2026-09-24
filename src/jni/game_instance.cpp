@@ -2,6 +2,8 @@
 
 #include <jni.h>
 
+#include <atomic>
+
 #include "core/logger.h"
 #include "jni/jni_context.h"
 #include "jni/reflection_cache.h"
@@ -57,8 +59,19 @@ struct Handles {
 };
 
 Handles g_handles{};
-jobject g_client = nullptr; // global ref to the live MinecraftClient
+
+// Global ref to the live MinecraftClient.
+//
+// Atomic because roadmap step 3 puts a second reader on the game thread: the worker thread
+// resolves and publishes the reference, and every frame afterwards reads it from the render
+// thread. The release/acquire pair is what makes "a visible client reference implies a fully
+// populated handle table" an actual guarantee instead of an ordering coincidence.
+std::atomic<jobject> g_client{nullptr};
 std::size_t g_unresolved = 0;
+
+[[nodiscard]] jobject client_ref() noexcept {
+    return g_client.load(std::memory_order_acquire);
+}
 
 // Records a resolution outcome in one line per member, so the handle table stays readable
 // instead of becoming a wall of conditionals.
@@ -126,10 +139,11 @@ bool no_pending_exception(JNIEnv* env) noexcept {
 }
 
 jobject player_object(JNIEnv* env) noexcept {
-    if (g_handles.client_player == nullptr) {
+    jobject client = client_ref();
+    if (client == nullptr || g_handles.client_player == nullptr) {
         return nullptr;
     }
-    return env->GetObjectField(g_client, g_handles.client_player);
+    return env->GetObjectField(client, g_handles.client_player);
 }
 
 template <typename T>
@@ -138,13 +152,13 @@ Maybe<T> missing() noexcept {
 }
 
 bool ready() noexcept {
-    return g_client != nullptr && jni::current_env() != nullptr;
+    return client_ref() != nullptr && jni::current_env() != nullptr;
 }
 
 } // namespace
 
 bool initialize() noexcept {
-    if (g_client != nullptr) {
+    if (client_ref() != nullptr) {
         return true;
     }
     if (!jni::available()) {
@@ -171,11 +185,13 @@ bool initialize() noexcept {
         return false;
     }
 
-    g_client = env->NewGlobalRef(instance);
-    if (g_client == nullptr) {
+    jobject reference = env->NewGlobalRef(instance);
+    if (reference == nullptr) {
         WOKE_LOG_ERROR("game: NewGlobalRef failed for the MinecraftClient instance");
         return false;
     }
+    // Published last: everything the accessors need is resolved by this point.
+    g_client.store(reference, std::memory_order_release);
 
     const jni::CacheStats cache = jni::stats();
     WOKE_LOG_INFO("game: MinecraftClient cached (%zu handle(s) unresolved, cache %zu/%zu/%zu)",
@@ -186,16 +202,25 @@ bool initialize() noexcept {
 
 void shutdown() noexcept {
     JNIEnv* env = jni::current_env();
-    if (env != nullptr && g_client != nullptr) {
-        env->DeleteGlobalRef(g_client);
+    jobject reference = g_client.exchange(nullptr, std::memory_order_acq_rel);
+    if (env != nullptr && reference != nullptr) {
+        env->DeleteGlobalRef(reference);
     }
-    g_client = nullptr;
     g_handles = Handles{};
     g_unresolved = 0;
 }
 
 bool available() noexcept {
-    return g_client != nullptr;
+    return client_ref() != nullptr;
+}
+
+bool has_player() noexcept {
+    if (!ready() || g_handles.client_player == nullptr) {
+        return false;
+    }
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    return player_object(env) != nullptr;
 }
 
 bool in_world() noexcept {
@@ -206,10 +231,11 @@ bool in_world() noexcept {
         return false;
     }
 
+    jobject client = client_ref();
     JNIEnv* env = jni::current_env();
     jni::ScopedLocalFrame frame;
-    jobject player = env->GetObjectField(g_client, g_handles.client_player);
-    jobject world = env->GetObjectField(g_client, g_handles.client_world);
+    jobject player = env->GetObjectField(client, g_handles.client_player);
+    jobject world = env->GetObjectField(client, g_handles.client_world);
     return player != nullptr && world != nullptr;
 }
 
@@ -443,7 +469,7 @@ Maybe<int> world_entity_count() noexcept {
 
     JNIEnv* env = jni::current_env();
     jni::ScopedLocalFrame frame;
-    jobject world = env->GetObjectField(g_client, g_handles.client_world);
+    jobject world = env->GetObjectField(client_ref(), g_handles.client_world);
     if (world == nullptr) {
         return missing<int>();
     }
@@ -462,7 +488,7 @@ Maybe<double> mouse_x() noexcept {
 
     JNIEnv* env = jni::current_env();
     jni::ScopedLocalFrame frame;
-    jobject mouse = env->GetObjectField(g_client, g_handles.client_mouse);
+    jobject mouse = env->GetObjectField(client_ref(), g_handles.client_mouse);
     if (mouse == nullptr) {
         return missing<double>();
     }
@@ -481,7 +507,7 @@ Maybe<double> mouse_y() noexcept {
 
     JNIEnv* env = jni::current_env();
     jni::ScopedLocalFrame frame;
-    jobject mouse = env->GetObjectField(g_client, g_handles.client_mouse);
+    jobject mouse = env->GetObjectField(client_ref(), g_handles.client_mouse);
     if (mouse == nullptr) {
         return missing<double>();
     }
