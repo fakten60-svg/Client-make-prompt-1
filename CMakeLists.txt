@@ -33,7 +33,9 @@ set(WOKE_CORE_SOURCES
     src/utils/time_format.cpp        # Step 1: local-timezone timestamp formatting
     src/utils/win32_utils.cpp        # Step 1: paths, console, module resolution
     src/jni/mappings.cpp             # Step 2: mappings.json registry (portable)
-    src/core/event_bus.cpp)          # Step 3: fixed-slot pub/sub (portable)
+    src/core/event_bus.cpp           # Step 3: fixed-slot pub/sub (portable)
+    src/core/config.cpp              # Step 5: settings persistence over nlohmann (portable)
+    src/modules/module_manager.cpp)  # Step 5: module registry, buckets, keybind routing
 
 # Step 4 builds on the portable half of the UI too: the curves, the animation engine and the theme
 # tokens carry no Windows dependency, so they are compiled by the host tests on Linux as well.
@@ -44,7 +46,8 @@ set(WOKE_UI_PORTABLE_SOURCES
 set(WOKE_UI_SOURCES
     src/utils/render_utils.cpp       # Step 4: the only ImDrawList primitive layer
     src/ui/components/traffic_lights.cpp # Step 4: macOS window controls
-    src/ui/gui.cpp)                  # Step 4: ImGui lifecycle, chrome composition, suppression
+    src/ui/components/pill_toggle.cpp    # Step 6: the animated Apple-style switch (compiled early; the GUI draws its own pill from the same primitives until the widget library lands)
+    src/ui/gui.cpp)                  # Step 4/5: ImGui lifecycle, chrome, module cards, suppression
 
 if(WIN32)
     include(JavaHeaders)

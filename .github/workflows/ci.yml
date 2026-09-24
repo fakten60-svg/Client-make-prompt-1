@@ -95,7 +95,11 @@ jobs:
             'ui-theme',                # step 4: the theme table is compiled in
             'gui-renderer',            # step 4: the ImGui host is compiled in
             'chrome shown',            # step 4: the overlay lifecycle is compiled in
-            'clickgui'                 # step 4: the chrome composition is compiled in
+            'clickgui',                # step 4: the chrome composition is compiled in
+            'modules: config loaded',  # step 5: the registry boot step is compiled in
+            'configs/default.json',    # step 5: persistence is compiled in
+            'Sprint State',            # step 5: the example modules are compiled in
+            'Zoom Amount'              # step 5: the example modules are compiled in
           )
           foreach ($marker in $markers) {
             if (-not $text.Contains($marker)) { throw "woke.dll is missing the marker '$marker'" }

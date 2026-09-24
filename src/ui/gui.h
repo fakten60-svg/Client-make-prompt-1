@@ -62,6 +62,14 @@ void toggle() noexcept;
 [[nodiscard]] int toggle_key() noexcept;
 void set_toggle_key(int virtual_key) noexcept;
 
+// Saves the current module state to configs/default.json. Called after any toggle through the
+// GUI or a keybind; also used at shutdown. Returns false when nothing was saved.
+[[nodiscard]] bool save_config() noexcept;
+
+// The module registry's per-frame fan-out lives in the frame scheduler; these hooks keep the
+// GUI's own bookkeeping (card hover states, enabled badges) in step with the registry.
+[[nodiscard]] std::size_t registered_module_count() noexcept;
+
 struct Stats {
     bool initialized = false;
     bool renderer_ready = false;

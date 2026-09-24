@@ -6,6 +6,7 @@ void test_mappings_parser();
 void test_event_bus();
 void test_ui_animation();
 void test_ui_draw();
+void test_module_system();
 
 int main() {
     std::printf("woke.wtf host-side logic tests\n");
@@ -17,6 +18,7 @@ int main() {
     test_event_bus();
     test_ui_animation();
     test_ui_draw();
+    test_module_system();
 
     return woke_test::summarize();
 }

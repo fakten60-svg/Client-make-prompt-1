@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold through Step 4 ImGui + macOS chrome landed)
+**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold through Step 5 module system landed)
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -820,8 +820,10 @@ Every PR checks **all** of:
 - `test_ui_draw` — the draw layer headlessly: ImGui's core is linked into the test target on every
   host, so `render_utils` and the traffic-light component are rendered into a real frame and the
   resulting draw data is asserted, together with the component's hover/press/click state machine.
-- `test_config_roundtrip` — every setting type → JSON → identical settings; unknown-key and
-  missing-key tolerance; schema-version forward compat.
+- `test_module_system` — the step-5 gate on Linux: registry registration/buckets/duplicate
+  refusal, keybind routing, panic, refused enables; the full config round trip across a simulated
+  reinjection (`reset()` + fresh module objects), deterministic documents, and the §4.2 tolerance
+  contract (unknown keys counted, wrong types ignored, malformed JSON refused, nothing throws).
 - `test_mappings_parser` — §5.4 schema variants (1)–(4); missing file, malformed JSON, unknown
   keys → `WARN` + invalid handles, never exceptions/crashes.
 
@@ -884,6 +886,7 @@ Every PR checks **all** of:
 | 2 — JVM bridge | landed | `mappings: resolved 39 classes / 2726 methods / 1251 fields` with all 7 anchors verified; live `class_310` instance cached by `game_instance`; host tests parse the shipped asset and every schema variant |
 | 3 — hook engine | landed | `hook-manager` (RAII MinHook + deferred removal), `swap-hook` (`wglSwapBuffers`), `wndproc-hook` (GLFW subclass + input routing), `frame-scheduler` (20 Hz tick gate, perf meter); `event-bus` dispatch rules covered by host tests |
 | 4 — ImGui + macOS chrome | landed | `ui/theme` (palette + metrics tokens), `ui/gui` (ImGui host, chrome composition, spring open/close, diagnostics), `ui/components/traffic_lights`, `ui/animation/*` (curves + substepped springs), `utils/render_utils`; suppression in the swap trampoline, WndProc input routed to ImGui first, host tests render the draw layer headlessly |
+| 5 — module system | landed | `settings/setting` (type-erased `Setting` view + Bool/Slider/Enum, union storage, dirty flags), `modules/category` + `base_module` (enable/disable as the only mutation path, settings self-registration), `modules/module_manager` (fixed pool, category buckets, keybind dispatch, tick/render fan-out), `core/config` (walks the registry, injectable storage backend, §4.2 tolerance), `modules/examples` (Sprint State + Zoom Amount, registered by the `modules` boot step); the GUI's category pages render real cards with animated pill toggles and every toggle persists to `configs/default.json`; host tests cover the round trip across a simulated reinjection |
 
 **Step 4 design notes worth carrying forward** (these supersede the older `Next gate: Step 4` line at
 the very end of this document, which was written while step 3 was landing):
@@ -914,13 +917,52 @@ the very end of this document, which was written while step 3 was landing):
 - **Theme tokens are portable and asserted.** Palette entries are written as the blueprint's hex
   values and converted at compile time, so the host tests check §7.2's traffic-light column and the
   style-token/metric agreement on Linux, and a re-theme stays one file.
-- **What is honestly still empty.** The six module categories, Settings, Configs, Socials and
+- **What is honestly still empty.** Settings, Configs, Socials and
   Keybinds render their real navigation rows and an explicit empty state; they are filled in by
-  steps 5, 6 and 8. Diagnostics and Theme are functional today: live subsystem counters and a
+  steps 6 and 8. The six module categories became real in step 5: the registry feeds them, cards
+  draw, toggles persist. Diagnostics and Theme are functional today: live subsystem counters and a
   palette preview built from the tokens.
 
-Next gate: Step 5 (the module system), which turns the ClickGUI's empty categories into real
-entries — category badges, module cards, and the config round-trip.
+**Step 5 design notes worth carrying forward:**
+
+- **Persistence is a property of the setting, not a registration step.** `core/config` walks the
+  registry, so a new module with new settings needs zero config code (the auto-binding
+  invariant). The storage backend is an injectable interface (`config::Storage`), which is what
+  makes the round trip testable on Linux against an in-memory map: the file-backed default and
+  the tested backend share the same `serialize`/`deserialize` path.
+- **Settings live in a union behind a type-erased view.** `settings::Setting` erases Bool, Slider
+  and Enum behind a `Kind` tag; wrong-kind reads return zero values and wrong-kind writes are
+  no-ops, so a widget or config document that disagrees with a setting cannot corrupt it.
+  Mutation is dirty-flagged and only on an actual change, so config saves are skippable when
+  nothing moved.
+- **`enable()`/`disable()` is the only mutation path, and buckets are recomputed by the manager.**
+  Direct module toggles bypass the manager's own paths, so callers (GUI, config load) report back
+  via `notify_changed()`: the same mutate-then-report pattern the hook engine's deferred removal
+  uses. `deserialize()` refreshes the buckets in a RAII guard, so even a malformed document
+  leaves the sidebar badges consistent.
+- **The enabled state is part of the persisted document.** The `enabled` key sits next to the
+  settings under each module key and is applied through the same `set_enabled()` path, so a
+  module that refuses in `on_enable()` is honestly reported instead of silently flipped.
+- **Cards are drawn from theme primitives; the widget library will replace them.** The step-5
+  card (slate fill, accent border when enabled, pill toggle, bind badge, clipped text into
+  `FixedString`) is composed directly in `ui/gui.cpp` from `render_utils`. One animated value
+  per card drives both the pill's knob and its colour, so they cannot desync; hover is a second
+  slot. Slots are acquired once at boot (two per module), so there is no per-frame allocation
+  or slot churn.
+- **Keybind dispatch and tick fan-out are boot-step subscriptions.** `lifecycle` subscribes the
+  module keybind router (press-mode; key-up never toggles) and the tick fan-out to the bus as
+  part of the `modules` boot step and unsubscribes in shutdown, so module dispatch has exactly
+  the lifetime of the registry.
+- **Config writes are deferred to the worker thread by construction.** A toggle on the game
+  thread calls `config::request_save(name)`, a one-slot coalescing mailbox; the worker loop
+  services it through `config::service_saves()`, and shutdown still writes the final state
+  synchronously. A rapid burst of toggles therefore costs one file write, and the render path
+  never touches the filesystem. The mailbox lives in `core/config.cpp` and stays portable - the
+  host tests coalesce two requests into one write and assert the drained state.
+
+Next gate: Step 6 (the widget library), which turns the step-5 cards into reusable
+`BaseUIComponent` widgets (`module_card`, `sidebar`, `search_bar`, `keybind_badge`, `pill_toggle`)
+and adds the notification pool.
 
 D-01 and D-02 are decided (see above). Design notes worth carrying forward:
 

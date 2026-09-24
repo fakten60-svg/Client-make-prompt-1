@@ -11,6 +11,7 @@
 #include <imgui_impl_win32.h>
 
 #include "core/build_config.h"
+#include "core/config.h"
 #include "core/event_bus.h"
 #include "core/events.h"
 #include "core/logger.h"
@@ -19,6 +20,8 @@
 #include "hooks/hook_manager.h"
 #include "hooks/swap_hook.h"
 #include "hooks/wndproc_hook.h"
+#include "modules/category.h"
+#include "modules/module_manager.h"
 #include "ui/animation/animation_controller.h"
 #include "ui/animation/easing.h"
 #include "ui/components/traffic_lights.h"
@@ -50,6 +53,8 @@ using draw::Rect;
 using util::FixedString;
 using util::Rgba;
 
+namespace modules = woke::modules;
+
 // The Misc/ClickGUI bind (§8: default RSHIFT).
 constexpr int kDefaultToggleKey = VK_RSHIFT;
 
@@ -77,6 +82,18 @@ constexpr float kDensityButtonWidth = 62.0f;
 constexpr float kDensityButtonHeight = 22.0f;
 constexpr float kTileLabelOffset = 12.0f;
 constexpr float kTileValueOffset = 32.0f;
+
+// Module card metrics (blueprint §7.1). List rows are shorter than grid tiles by design; the
+// pill toggle is the same Apple-blue switch on both.
+constexpr float kCardPadding = 12.0f;
+constexpr float kPillWidth = 40.0f;
+constexpr float kBindBadgeWidth = 34.0f;
+constexpr float kBindBadgeHeight = 18.0f;
+constexpr float kBindBadgeOffset = 10.0f;
+constexpr float kCardDescOffset = 20.0f;
+// Vertical distance from the content pane's padding box to where the module cards start: the
+// heading, its subtitle and one spacer row (matches draw_content's own layout math).
+constexpr float kTileHeaderOffset = 32.0f;
 
 // Section order in the sidebar: the six module categories from the catalogue, then the general
 // pages. Derived from the enum so a new Section cannot be forgotten here.
@@ -116,6 +133,13 @@ struct State {
     std::array<StateHandle, kNavCount> nav_hover{};
     TrafficLights lights{};
 
+    // Per-card animation slots, acquired once at boot: index i tracks registry index i. The pill
+    // toggle's t and the card's hover brightness are separate states so a shared widget cannot
+    // make two cards visually desync; the registry holds at most 32 modules, so the arrays are
+    // sized once and never grow (§6.3).
+    std::array<animation::StateHandle, modules::ModuleManager::kMaxModules> card_hover{};
+    std::array<animation::StateHandle, modules::ModuleManager::kMaxModules> card_pill{};
+
     Section selected = Section::Diagnostics;
 
     float drag_offset_x = 0.0f;
@@ -142,6 +166,10 @@ struct State {
     // cannot disagree about where a button is.
     Rect header{};
     Rect density_button{};
+    // Cached module card rectangles for the selected category, refreshed when the page or the
+    // module layout changes; input handling reads these instead of recomputing layout.
+    std::array<Rect, modules::ModuleManager::kMaxModules> card_rects{};
+    std::size_t card_count = 0;
 };
 
 State g_state{};
@@ -472,6 +500,194 @@ void handle_density_button() noexcept {
     }
 }
 
+// ── Step 5: module cards ──────────────────────────────────────────────────────
+
+// One registry pass, reporting the modules of the selected category in display order. Shared by
+// input handling and drawing so both always see the same set.
+std::size_t visible_modules(modules::BaseModule** out, std::size_t capacity) noexcept {
+    const modules::ModuleManager& registry = modules::manager();
+    const modules::Category category = modules::category_from_section(g_state.selected);
+    std::size_t count = 0;
+    for (std::size_t index = 0; index < registry.count() && count < capacity; ++index) {
+        modules::BaseModule* module = registry.at(index);
+        if (module != nullptr && module->category() == category) {
+            out[count++] = module;
+        }
+    }
+    return count;
+}
+
+float card_height_for(float density) noexcept {
+    return util::lerp(theme::metrics::kCardHeight, theme::metrics::kRowHeight, density);
+}
+
+// Card rectangles for the selected category, laid out exactly as draw_module_cards places them.
+// Input handling reads this so a click can never land on a card the frame has not drawn.
+void compute_module_cards(const Rect& content_area) noexcept {
+    const float density = util::clamp01(g_state.animation.value(g_state.density));
+    const float gap = theme::metrics::kTileGap;
+    const float grid_width = (content_area.w - gap) * 0.5f;
+    const float tile_width = util::lerp(grid_width, content_area.w, density);
+    const float tile_height = card_height_for(density);
+
+    modules::BaseModule* visible[modules::ModuleManager::kMaxModules] = {};
+    const std::size_t count = visible_modules(visible, modules::ModuleManager::kMaxModules);
+
+    float x = content_area.left();
+    float y = content_area.top();
+    float column = 0.0f;
+    std::size_t card = 0;
+
+    for (std::size_t index = 0; index < count; ++index) {
+        g_state.card_rects[card] = Rect{x, y, tile_width, tile_height};
+        ++card;
+
+        column += 1.0f;
+        if (density >= 0.999f) {
+            y += tile_height + gap;
+            continue;
+        }
+        if (column >= 2.0f) {
+            column = 0.0f;
+            x = content_area.left();
+            y += tile_height + gap;
+        } else {
+            x += tile_width + gap;
+        }
+        if (y + tile_height > content_area.bottom()) {
+            break;
+        }
+    }
+    g_state.card_count = card;
+}
+
+void handle_module_cards(const Rect& content_area) noexcept {
+    compute_module_cards(content_area);
+    if (g_state.card_count == 0) {
+        return;
+    }
+
+    modules::BaseModule* visible[modules::ModuleManager::kMaxModules] = {};
+    (void)visible_modules(visible, modules::ModuleManager::kMaxModules);
+    const Input& input = g_state.input;
+
+    for (std::size_t index = 0; index < g_state.card_count; ++index) {
+        const Rect& card = g_state.card_rects[index];
+        if (!card.contains(input.mouse_x, input.mouse_y)) {
+            continue;
+        }
+        // The pill owns the right edge of the card; a press there toggles through it, a press on
+        // the card body toggles directly. All mutation happens in this input phase (7.3: render
+        // never mutates) and draw_module_cards only reads the resulting state.
+        const Rect pill_area = Rect{card.right() - kPillWidth - kCardPadding,
+            card.center_y() - (theme::metrics::kPillHeight * 0.5f), kPillWidth,
+            theme::metrics::kPillHeight};
+        const bool on_pill = pill_area.contains(input.mouse_x, input.mouse_y);
+        if (!input.is_pressed(0) || (!card.contains(input.mouse_x, input.mouse_y) && !on_pill)) {
+            continue;
+        }
+        modules::BaseModule* module = visible[index];
+        if (module != nullptr && module->set_enabled(!module->enabled())) {
+            modules::manager().notify_changed();
+            (void)save_config();
+        }
+    }
+}
+
+// Draws the Apple-blue pill switch for one card from the theme primitives. One animated t drives
+// both the knob position (lerp) and the background colour (dark gray -> accent cross-fade), so the
+// two cannot desync - they are the same number (§7.4).
+void draw_pill(ImDrawList* draw_list, const Rect& area, float t, float alpha) noexcept {
+    const Rgba background =
+        util::mix(theme::color::kCardBorder, theme::color::kAccent, util::clamp01(t));
+    draw::rounded_rect(draw_list, area, util::with_alpha(background, alpha), area.h * 0.5f);
+
+    const float knob_radius = theme::metrics::kKnobRadius;
+    const float knob_inset = 2.0f;
+    const float knob_x = util::lerp(area.left() + knob_radius + knob_inset,
+        area.right() - knob_radius - knob_inset, util::clamp01(t));
+    draw::circle(draw_list, knob_x, area.center_y(), knob_radius,
+        util::with_alpha(util::kWhite, alpha));
+}
+
+void draw_module_cards(ImDrawList* draw_list, const Rect& area, float alpha) noexcept {
+    if (area.empty()) {
+        return;
+    }
+    // Rectangles come from compute_module_cards(), run in this frame's input phase, so layout
+    // and hit-testing are the same numbers by construction.
+    modules::BaseModule* visible[modules::ModuleManager::kMaxModules] = {};
+    const std::size_t count = visible_modules(visible, modules::ModuleManager::kMaxModules);
+    const Input& input = g_state.input;
+
+    for (std::size_t index = 0; index < count && index < g_state.card_count; ++index) {
+        const Rect& card = g_state.card_rects[index];
+        if (card.empty()) {
+            continue;
+        }
+        modules::BaseModule* module = visible[index];
+        if (module == nullptr) {
+            continue;
+        }
+
+        const bool hovered = card.contains(input.mouse_x, input.mouse_y);
+        const bool enabled = module->enabled();
+
+        // Targets are steered here and advanced once per frame by tick_animation, exactly like
+        // the sidebar's nav rows (§7.3: animate never draws, render never mutates).
+        const StateHandle hover = g_state.card_hover[index];
+        const StateHandle pill = g_state.card_pill[index];
+        if (hover.valid()) {
+            g_state.animation.set_target(hover, hovered ? 1.0f : 0.0f);
+        }
+        if (pill.valid()) {
+            g_state.animation.set_target(pill, enabled ? 1.0f : 0.0f);
+        }
+
+        const float hover_amount =
+            hover.valid() ? util::clamp01(g_state.animation.value(hover)) : (hovered ? 1.0f : 0.0f);
+        const Rgba base = util::mix(theme::color::kCard, theme::color::kCardHover, hover_amount);
+
+        draw::rounded_rect(draw_list, card, util::with_alpha(base, alpha),
+            theme::metrics::kFrameRounding);
+        draw::border_stroke(draw_list, card,
+            util::with_alpha(enabled ? theme::color::kAccent : theme::color::kCardBorder, alpha),
+            theme::metrics::kFrameRounding);
+
+        const Rect inner = card.inset(kCardPadding);
+        const float text_width = inner.w - (kPillWidth + kCardPadding);
+        draw::text_clipped(draw_list,
+            Rect{inner.left(), inner.top(), text_width, inner.h * 0.5f}, module->name(),
+            util::with_alpha(theme::color::kText, alpha), Align::Left);
+        draw::text_clipped(draw_list,
+            Rect{inner.left(), inner.top() + kCardDescOffset, text_width, inner.h - kCardDescOffset},
+            module->description(), util::with_alpha(theme::color::kTextMuted, alpha), Align::Left,
+            theme::metrics::kFooterFontSize);
+
+        // Bind badge, when the module carries one.
+        if (module->bind() != 0) {
+            const Rect badge = Rect{inner.right() - kBindBadgeWidth,
+                inner.top() - kBindBadgeOffset, kBindBadgeWidth, kBindBadgeHeight};
+            draw::rounded_rect(draw_list, badge,
+                util::with_alpha(theme::color::kNavActive, alpha), 4.0f);
+            FixedString<8> bind_text;
+            bind_text.format("0x%02X", static_cast<unsigned int>(module->bind()));
+            draw::text_in(draw_list, badge, bind_text.c_str(),
+                util::with_alpha(theme::color::kTextMuted, alpha), Align::Center,
+                theme::metrics::kFooterFontSize);
+        }
+
+        const Rect pill_area = Rect{card.right() - kPillWidth - kCardPadding,
+            card.center_y() - (theme::metrics::kPillHeight * 0.5f), kPillWidth,
+            theme::metrics::kPillHeight};
+        const float pill_t =
+            pill.valid() ? util::clamp01(g_state.animation.value(pill)) : (enabled ? 1.0f : 0.0f);
+        // Draw only: the click that produced this state was consumed in this frame's input
+        // phase (handle_module_cards), so the animation target set above is the only write.
+        draw_pill(draw_list, pill_area, pill_t, alpha);
+    }
+}
+
 // ── Drawing ───────────────────────────────────────────────────────────────────────
 
 FixedString<64> compose_title() noexcept {
@@ -699,20 +915,14 @@ void draw_theme_swatches(ImDrawList* draw_list, const Rect& area, float alpha) n
 }
 
 void draw_empty_state(ImDrawList* draw_list, const Rect& area, float alpha) noexcept {
-    if (is_module_category(g_state.selected)) {
-        FixedString<48> planned;
-        planned.format("Planned in this category: %zu module(s)",
-            category_catalog_size(g_state.selected));
-        draw::text_in(draw_list, area, "No modules registered in this category yet.",
-            util::with_alpha(theme::color::kTextMuted, alpha), Align::Center);
-        draw::text_in(draw_list, area.offset(0.0f, 22.0f), planned.c_str(),
-            util::with_alpha(theme::color::kTextDim, alpha), Align::Center,
-            theme::metrics::kFooterFontSize);
-        return;
-    }
-
-    draw::text_in(draw_list, area, "This page is not available in this build yet.",
+    FixedString<48> planned;
+    planned.format("Planned in this category: %zu module(s)",
+        category_catalog_size(g_state.selected));
+    draw::text_in(draw_list, area, "No modules registered in this category yet.",
         util::with_alpha(theme::color::kTextMuted, alpha), Align::Center);
+    draw::text_in(draw_list, area.offset(0.0f, 22.0f), planned.c_str(),
+        util::with_alpha(theme::color::kTextDim, alpha), Align::Center,
+        theme::metrics::kFooterFontSize);
 }
 
 void draw_content(ImDrawList* draw_list, const Layout& layout, float collapse) noexcept {
@@ -748,7 +958,15 @@ void draw_content(ImDrawList* draw_list, const Layout& layout, float collapse) n
     } else if (g_state.selected == Section::ThemePage) {
         draw_theme_swatches(draw_list, content_area, alpha);
     } else if (is_module_category(g_state.selected)) {
-        draw_empty_state(draw_list, content_area, alpha);
+        // Live count from the registry, not cached state: switching categories must not show the
+        // previous category's cards or a stale empty message.
+        const bool has_modules =
+            modules::manager().category_total(modules::category_from_section(g_state.selected)) > 0;
+        if (has_modules) {
+            draw_module_cards(draw_list, content_area, alpha);
+        } else {
+            draw_empty_state(draw_list, content_area, alpha);
+        }
     } else {
         draw_empty_state(draw_list, content_area, alpha);
     }
@@ -789,6 +1007,16 @@ void compose_frame() noexcept {
     handle_lights(layout);
     handle_density_button();
     handle_sidebar_nav(layout, collapse);
+    if (collapse < 0.999f && is_module_category(g_state.selected)) {
+        // Exactly the rectangle draw_content hands to draw_module_cards: the padding box below
+        // the heading and its subtitle. Input handling and drawing must never disagree about
+        // where a card is.
+        const Rect body = layout.content.inset(theme::metrics::kContentPadding);
+        const float header_drop = kTileHeaderOffset + theme::metrics::kHeaderFontSize + 6.0f;
+        const Rect card_area{body.left(), body.top() + header_drop, body.w,
+            body.h > header_drop ? body.h - header_drop : 0.0f};
+        handle_module_cards(card_area);
+    }
     handle_drag(layout);
 
     // The drop shadow goes on the background list: it must be under the window's own fill, and it
@@ -875,6 +1103,14 @@ bool initialize() noexcept {
     }
     g_state.lights.bind(g_state.animation);
 
+    // One hover + one pill slot per registry row, acquired once so a card never animates from a
+    // recycled handle (§7.4). A full pool degrades gracefully: the card falls back to an
+    // instantaneous state instead of failing to render.
+    for (std::size_t index = 0; index < modules::ModuleManager::kMaxModules; ++index) {
+        g_state.card_hover[index] = g_state.animation.acquire_state(0.0f, 18.0f);
+        g_state.card_pill[index] = g_state.animation.acquire_state(0.0f, 18.0f);
+    }
+
     g_state.context = ImGui::CreateContext();
     if (g_state.context == nullptr) {
         WOKE_LOG_ERROR("gui: ImGui context creation failed - the ClickGUI stays disabled");
@@ -910,6 +1146,12 @@ void shutdown() noexcept {
     g_state.focus_subscription = events::Subscription{};
 
     g_state.lights.unbind();
+    for (std::size_t index = 0; index < modules::ModuleManager::kMaxModules; ++index) {
+        g_state.animation.release(g_state.card_hover[index]);
+        g_state.animation.release(g_state.card_pill[index]);
+        g_state.card_hover[index] = animation::StateHandle{};
+        g_state.card_pill[index] = animation::StateHandle{};
+    }
 
     if (g_state.context != nullptr) {
         ImGui::SetCurrentContext(g_state.context);
@@ -1083,6 +1325,22 @@ bool needs_render() noexcept {
     }
     // Still closing: the close animation has to be rendered or it never finishes.
     return !g_state.animation.at_rest(g_state.open_spring);
+}
+
+bool save_config() noexcept {
+    if (!modules::manager().count()) {
+        return false; // nothing registered: saving would write an empty document
+    }
+    // Config IO never runs on the render path (Section 4.2). The game thread asks; the worker
+    // loop services the request and coalesces rapid toggles into one write. The synchronous
+    // config::save stays reserved for the worker thread (shutdown's final-state write).
+    woke::config::request_save("default");
+    WOKE_LOG_DEBUG("gui: module state save requested (worker writes configs/default.json)");
+    return true;
+}
+
+std::size_t registered_module_count() noexcept {
+    return modules::manager().count();
 }
 
 int toggle_key() noexcept {
