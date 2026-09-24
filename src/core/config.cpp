@@ -27,10 +27,19 @@ using nlohmann::json;
 class FileStorage final : public Storage {
 public:
     bool read(std::string_view path, std::string& out) override {
+        // Secure CRT variant on Windows: MSVC deprecates plain fopen (C4996) and the project
+        // builds with warnings as errors; the logger's file layer follows the same rule.
+#if defined(_WIN32)
+        std::FILE* handle = nullptr;
+        if (::fopen_s(&handle, std::string(path).c_str(), "rb") != 0) {
+            return false;
+        }
+#else
         std::FILE* handle = std::fopen(std::string(path).c_str(), "rb");
         if (handle == nullptr) {
             return false;
         }
+#endif
         char buffer[4096];
         std::size_t chunk = 0;
         while ((chunk = std::fread(buffer, 1, sizeof(buffer), handle)) > 0) {
@@ -57,10 +66,17 @@ public:
             (void)::mkdir(std::string(path.substr(0, slash)).c_str(), 0755);
 #endif
         }
-        std::FILE* handle = std::fopen(std::string(path).c_str(), "wb");
+        std::FILE* handle = nullptr;
+#if defined(_WIN32)
+        if (::fopen_s(&handle, std::string(path).c_str(), "wb") != 0) {
+            return false;
+        }
+#else
+        handle = std::fopen(std::string(path).c_str(), "wb");
         if (handle == nullptr) {
             return false;
         }
+#endif
         const std::size_t written = std::fwrite(contents.data(), 1, contents.size(), handle);
         const bool ok = (written == contents.size()) && (std::fclose(handle) == 0);
         return ok;
