@@ -26,6 +26,11 @@ std::wstring resolve_runtime_path(const wchar_t* leaf);
 // Creates a directory if missing. Returns true when the directory exists afterwards.
 bool ensure_directory(const std::wstring& path);
 
+// Reads a whole UTF-8 text file into memory (runtime assets such as mappings.json).
+// Returns an empty string when the file cannot be opened or is larger than max_bytes, so
+// the caller reports one concrete failure instead of acting on half-parsed content.
+std::string read_text_file(const std::wstring& path, std::size_t max_bytes = 64u * 1024u * 1024u);
+
 // Attaches to the parent console when the game was started from a terminal, otherwise
 // allocates a fresh one. javaw.exe has no console, so this is what makes the colorized
 // terminal output visible during local testing.

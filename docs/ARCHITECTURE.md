@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold + Step 1 core foundation landed)
+**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold, Step 1 core foundation and Step 2 JVM bridge landed)
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -456,7 +456,14 @@ a missing JVM or stale mapping degrades to a console-only DLL, never a crash).
 
 ### 5.1 `jni_context` — scoped attach discipline
 
-- Discover `JavaVM*` once via `JNI_GetCreatedJavaVMs`; refuse multi-VM (log `ERROR`).
+- Discover `JavaVM*` once via `JNI_GetCreatedJavaVMs` resolved dynamically from the `jvm.dll` the
+  game already loaded (never an import library, so the DLL stays loadable in any process); refuse
+  multi-VM (log `ERROR`).
+- **Class discovery is classloader-first, in that order:** `FindClass` on the system loader is tried
+  first and the game's loader is the fallback. Minecraft's classes live in Knot's loader, and a
+  thread we created ourselves inherits no useful context loader, so the fallback takes the context
+  class loader of a live Java thread (`Thread.enumerate`) once and caches it as a global ref. Without
+  this the bridge attaches successfully and then resolves nothing.
 - `ScopedAttach` RAII: `AttachCurrentThreadAsDaemon` (idempotent if already attached) + `env`.
 - `ScopedLocalFrame` RAII: `PushLocalFrame(16)` / `PopLocalFrame` — per-frame JNI locals are
   released as a block; **no `DeleteLocalRef` bookkeeping anywhere else in the codebase**.
@@ -863,7 +870,30 @@ Every PR checks **all** of:
 
 ---
 
-**End of blueprint.** Implementation is underway: Roadmap Step 0 (scaffold, CI, injector) and
-Step 1 (core foundation: logger, time formatting, win32 utils, lifecycle, DLL entry) are landed.
-D-01 and D-02 are decided (see above). Next gate: Step 2 (JVM bridge), which consumes the real
-`mappings.json` generated from `net.fabricmc:yarn:1.21.11+build.6`.
+**End of blueprint.** Implementation is underway:
+
+| Step | State | Evidence |
+|---|---|---|
+| 0 — repo scaffold | landed | CI builds the empty DLL Release in `windows-latest`, host tests run on `ubuntu-latest` |
+| 1 — core foundation | landed | logger writes the colored console line, the timestamped session file and `latest.log`; `dllmain` boots from one worker thread |
+| 2 — JVM bridge | landed | `mappings: resolved 39 classes / 2726 methods / 1251 fields` with all 7 anchors verified; live `class_310` instance cached by `game_instance`; host tests parse the shipped asset and every schema variant |
+
+D-01 and D-02 are decided (see above). Design notes worth carrying forward:
+
+- **`src/jni/mappings.cpp` is portable on purpose.** No `jni.h`, no `windows.h`, no logger: it
+  collects warnings as strings and the caller reports them. That is what lets the host test suite
+  parse the real `mappings.json` and assert the anchor table on Linux, in seconds, with no game
+  running — the mapping asset is the component a game update breaks first, so it is the component
+  that must be cheapest to verify.
+- **The JNI bridge is compile-gated.** `cmake/JavaHeaders.cmake` finds `jni.h` (explicit override →
+  `JAVA_HOME` → usual install roots). CI installs JDK 21 and configures `WOKE_REQUIRE_JNI=ON`, so a
+  missing JDK is a hard configuration error there: a green build proves the bridge compiled instead
+  of proving it was skipped.
+- **Handles are cached inside the registry entries** as opaque `void*` slots, so a per-tick read is a
+  hash hit plus a pointer read — no `std::string` is constructed and no map is grown after boot.
+- **Late client binding.** Injecting before the game creates its client instance is normal, so a
+  missing instance is a warning plus a bounded retry from the worker loop (30 s at the 10 Hz
+  cadence), never a boot failure.
+
+Next gate: Step 3 (hook engine), which moves the frame pipeline onto the game thread via the swap
+hook so JNI access becomes inherently serialized with the game (§6.2).

@@ -18,18 +18,36 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 
-# ── First-party DLL sources, added one roadmap step at a time ─────────────────
+# Third-party acquisition runs on every host: nlohmann/json backs the portable mapping
+# registry, so the host tests need it too. ImGui and MinHook stay Windows-only inside.
+include(ThirdParty)
+
+# ── First-party sources, added one roadmap step at a time ─────────────────────
+# src/jni/mappings.cpp is deliberately portable (no jni.h, no windows.h, no logger): the
+# mapping registry is the component a stale game update breaks first, so it is covered by
+# the host tests rather than only by an in-game session.
 set(WOKE_CORE_SOURCES
     src/dllmain.cpp                  # Step 1: loader-lock-safe entry point
     src/core/lifecycle.cpp           # Step 1: single init/teardown owner
     src/core/logger.cpp              # Step 1: console + multi-session file logging
     src/utils/time_format.cpp        # Step 1: local-timezone timestamp formatting
-    src/utils/win32_utils.cpp)       # Step 1: paths, console, module resolution
+    src/utils/win32_utils.cpp        # Step 1: paths, console, module resolution
+    src/jni/mappings.cpp)            # Step 2: mappings.json registry (portable)
 
 if(WIN32)
-    include(ThirdParty)
+    include(JavaHeaders)
 
-    add_library(woke SHARED ${WOKE_CORE_SOURCES})
+    # Step 2: the JVM bridge. Compiled only when a JDK's jni.h was found; otherwise the
+    # DLL still builds and lifecycle logs that the bridge is absent (WOKE_HAVE_JNI=0).
+    set(WOKE_JNI_SOURCES "")
+    if(WOKE_HAVE_JNI)
+        list(APPEND WOKE_JNI_SOURCES
+            src/jni/jni_context.cpp      # Step 2: VM discovery + per-thread attach
+            src/jni/reflection_cache.cpp # Step 2: cached jclass/jmethodID/jfieldID lookups
+            src/jni/game_instance.cpp)   # Step 2: the only game-state façade
+    endif()
+
+    add_library(woke SHARED ${WOKE_CORE_SOURCES} ${WOKE_JNI_SOURCES})
     target_include_directories(woke PRIVATE src)
     target_compile_definitions(woke PRIVATE
         WIN32_LEAN_AND_MEAN NOMINMAX
@@ -37,10 +55,21 @@ if(WIN32)
         WOKE_VERSION_STRING="${PROJECT_VERSION}")
     woke_apply_warnings(woke)
 
-    # dwmapi is required by the Dear ImGui Win32 backend; psapi by MinHook's buffer code.
+    # dwmapi is required by the Dear ImGui Win32 backend; psapi by MinHook's buffer code and
+    # by the module scan that locates jvm.dll.
     target_link_libraries(woke PRIVATE
         imgui minhook nlohmann_json
         opengl32 user32 gdi32 shell32 ole32 dwmapi psapi dxgi d3d11)
+
+    # Spelled as two explicit branches rather than $<BOOL:...>: lifecycle.cpp switches its
+    # boot steps on this macro, and an empty generator-expression operand is a needless
+    # configure-time risk for one define.
+    if(WOKE_HAVE_JNI)
+        target_compile_definitions(woke PRIVATE WOKE_HAVE_JNI=1)
+        target_link_libraries(woke PRIVATE jni_headers)
+    else()
+        target_compile_definitions(woke PRIVATE WOKE_HAVE_JNI=0)
+    endif()
 
     # Optimization contract: full program optimization + link-time code generation and
     # dead-code elimination. Debug keeps symbols for crash triage inside the JVM.
