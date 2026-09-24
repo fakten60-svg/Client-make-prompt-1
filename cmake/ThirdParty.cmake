@@ -17,6 +17,26 @@ set(WOKE_IMGUI_TAG   "v1.92.9b-docking" CACHE STRING "Dear ImGui tag or commit t
 set(WOKE_MINHOOK_TAG "v1.3.4"           CACHE STRING "MinHook tag or commit to build against")
 set(WOKE_JSON_TAG    "v3.12.0"          CACHE STRING "nlohmann/json tag or commit to build against")
 
+# nlohmann/json is fetched on every host: the mapping registry is portable, so the host
+# tests parse mappings.json (and every schema variant) on Linux as well as on Windows.
+FetchContent_Declare(woke_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        ${WOKE_JSON_TAG}
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  woke-does-not-build-upstream-cmakelists)
+
+FetchContent_MakeAvailable(woke_json)
+
+# ── nlohmann/json (header only) ──
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE ${woke_json_SOURCE_DIR}/include)
+
+# ImGui and MinHook are only needed by the injected artifact, so they are skipped entirely
+# on a non-Windows host instead of being cloned for nothing.
+if(NOT WIN32)
+    return()
+endif()
+
 FetchContent_Declare(woke_imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG        ${WOKE_IMGUI_TAG}
@@ -29,13 +49,7 @@ FetchContent_Declare(woke_minhook
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  woke-does-not-build-upstream-cmakelists)
 
-FetchContent_Declare(woke_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG        ${WOKE_JSON_TAG}
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  woke-does-not-build-upstream-cmakelists)
-
-FetchContent_MakeAvailable(woke_imgui woke_minhook woke_json)
+FetchContent_MakeAvailable(woke_imgui woke_minhook)
 
 # ── Dear ImGui (Win32 + OpenGL3 backends only — the renderer path Minecraft uses) ──
 add_library(imgui STATIC
@@ -66,7 +80,3 @@ target_include_directories(minhook PUBLIC
     ${woke_minhook_SOURCE_DIR}/src
     ${woke_minhook_SOURCE_DIR}/src/hde)
 target_compile_definitions(minhook PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-
-# ── nlohmann/json (header only) ──
-add_library(nlohmann_json INTERFACE)
-target_include_directories(nlohmann_json INTERFACE ${woke_json_SOURCE_DIR}/include)

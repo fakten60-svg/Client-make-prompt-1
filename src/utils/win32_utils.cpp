@@ -1,5 +1,6 @@
 #include "utils/win32_utils.h"
 
+#include <cstdint>
 #include <cstdio>
 
 namespace woke::util {
@@ -96,6 +97,40 @@ bool ensure_directory(const std::wstring& path) {
         return true;
     }
     return ::GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+std::string read_text_file(const std::wstring& path, std::size_t max_bytes) {
+    if (path.empty()) {
+        return {};
+    }
+
+    const HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+
+    LARGE_INTEGER size{};
+    if (::GetFileSizeEx(file, &size) == FALSE || size.QuadPart <= 0
+        || static_cast<std::uint64_t>(size.QuadPart) > max_bytes) {
+        (void)::CloseHandle(file);
+        return {};
+    }
+
+    std::string contents(static_cast<std::size_t>(size.QuadPart), '\0');
+    std::size_t offset = 0;
+    while (offset < contents.size()) {
+        DWORD read = 0;
+        const DWORD chunk = static_cast<DWORD>(contents.size() - offset);
+        if (::ReadFile(file, contents.data() + offset, chunk, &read, nullptr) == FALSE || read == 0) {
+            (void)::CloseHandle(file);
+            return {};
+        }
+        offset += read;
+    }
+
+    (void)::CloseHandle(file);
+    return contents;
 }
 
 bool attach_console() {

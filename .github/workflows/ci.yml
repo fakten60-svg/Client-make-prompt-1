@@ -32,6 +32,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The JVM bridge needs jni.h. Pinning the same JDK major that Minecraft 1.21.11 ships
+      # with keeps the compile check aligned with the runtime we attach to, and makes
+      # WOKE_REQUIRE_JNI=ON below deterministic instead of dependent on image contents.
+      - name: Install JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Configure
         shell: pwsh
         run: |
@@ -55,13 +64,30 @@ jobs:
           Write-Host "using generator: $chosen"
           # Warnings are errors for first-party targets only; vendored code is exempt by
           # construction because the warning policy is applied per first-party target.
-          cmake -B build -G $chosen -A x64 -DWOKE_BUILD_TESTS=ON -DWOKE_WARNINGS_AS_ERRORS=ON
+          # WOKE_REQUIRE_JNI=ON makes a missing JDK fatal, so this job cannot go green with
+          # roadmap step 2 quietly compiled out.
+          cmake -B build -G $chosen -A x64 `
+            -DWOKE_BUILD_TESTS=ON -DWOKE_WARNINGS_AS_ERRORS=ON -DWOKE_REQUIRE_JNI=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel
 
       - name: Run host tests
         run: ctest --test-dir build -C Release --output-on-failure
+
+      # A silent skip would make the artifact look fine while the JVM bridge was never
+      # compiled, so the built DLL is checked for the bridge's own log strings.
+      - name: Verify the JVM bridge is in the artifact
+        shell: pwsh
+        run: |
+          $dll = 'bin/Release/woke.dll'
+          if (-not (Test-Path $dll)) { throw "$dll was not produced" }
+          $bytes = [System.IO.File]::ReadAllBytes($dll)
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($marker in @('jvm-bridge', 'mappings: resolved', 'JNI_GetCreatedJavaVMs')) {
+            if (-not $text.Contains($marker)) { throw "woke.dll is missing the marker '$marker'" }
+          }
+          Write-Host 'JVM bridge markers are present in woke.dll'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
