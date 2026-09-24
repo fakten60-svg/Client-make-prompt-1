@@ -35,6 +35,17 @@ set(WOKE_CORE_SOURCES
     src/jni/mappings.cpp             # Step 2: mappings.json registry (portable)
     src/core/event_bus.cpp)          # Step 3: fixed-slot pub/sub (portable)
 
+# Step 4 builds on the portable half of the UI too: the curves, the animation engine and the theme
+# tokens carry no Windows dependency, so they are compiled by the host tests on Linux as well.
+set(WOKE_UI_PORTABLE_SOURCES
+    src/ui/theme.cpp                 # Step 4: palette, metrics and navigation tokens
+    src/ui/animation/animation_controller.cpp) # Step 4: delta-time animations
+
+set(WOKE_UI_SOURCES
+    src/utils/render_utils.cpp       # Step 4: the only ImDrawList primitive layer
+    src/ui/components/traffic_lights.cpp # Step 4: macOS window controls
+    src/ui/gui.cpp)                  # Step 4: ImGui lifecycle, chrome composition, suppression
+
 if(WIN32)
     include(JavaHeaders)
 
@@ -56,7 +67,8 @@ if(WIN32)
         src/hooks/wndproc_hook.cpp       # Step 3: GLFW window subclass + input routing
         src/hooks/game_thread.cpp)       # Step 3: frame scheduler, tick gate, perf meter
 
-    add_library(woke SHARED ${WOKE_CORE_SOURCES} ${WOKE_JNI_SOURCES} ${WOKE_HOOK_SOURCES})
+    add_library(woke SHARED ${WOKE_CORE_SOURCES} ${WOKE_UI_PORTABLE_SOURCES} ${WOKE_JNI_SOURCES}
+        ${WOKE_HOOK_SOURCES} ${WOKE_UI_SOURCES})
     target_include_directories(woke PRIVATE src)
     target_compile_definitions(woke PRIVATE
         WIN32_LEAN_AND_MEAN NOMINMAX
@@ -66,8 +78,10 @@ if(WIN32)
 
     # dwmapi is required by the Dear ImGui Win32 backend; psapi by MinHook's buffer code and
     # by the module scan that locates jvm.dll.
+    # imgui is the core (host-independent) and imgui_backends is the Win32 + OpenGL3 glue; the
+    # split is what lets the host tests render the draw layer headlessly on Linux.
     target_link_libraries(woke PRIVATE
-        imgui minhook nlohmann_json
+        imgui imgui_backends minhook nlohmann_json
         opengl32 user32 gdi32 shell32 ole32 dwmapi psapi dxgi d3d11)
 
     # Spelled as two explicit branches rather than $<BOOL:...>: lifecycle.cpp switches its

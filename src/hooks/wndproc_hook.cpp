@@ -8,6 +8,7 @@
 #include "core/events.h"
 #include "core/logger.h"
 #include "hooks/hook_manager.h"
+#include "ui/gui.h"
 
 namespace woke::hooks {
 namespace {
@@ -220,8 +221,17 @@ bool route_message(UINT message, WPARAM wparam, LPARAM lparam) noexcept {
 LRESULT CALLBACK wndproc_detour(HWND window, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
     g_routed_messages.fetch_add(1, std::memory_order_relaxed);
 
-    // ImGui's Win32 backend is consulted here from roadmap step 4, before the bus, so that the
-    // GUI sees a message first and can consume it.
+    // Step 4: the ClickGUI sees every message first. ui::handle_window_message feeds ImGui's Win32
+    // backend (cursor position, buttons, wheel, keys - and WM_CHAR for text fields) and reports
+    // whether the GUI took the message; a consumed message is swallowed here so the game never sees
+    // a click or a keystroke that belonged to the overlay. The toggle key is deliberately left
+    // alone, because it is the event bus that closes the GUI again.
+    if (ui::handle_window_message(
+            static_cast<void*>(window), message, static_cast<unsigned long long>(wparam),
+            static_cast<long long>(lparam))) {
+        return 0;
+    }
+
     if (route_message(message, wparam, lparam)) {
         return 0;
     }

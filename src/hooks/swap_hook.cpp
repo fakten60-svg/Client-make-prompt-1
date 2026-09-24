@@ -7,6 +7,7 @@
 #include "core/logger.h"
 #include "hooks/game_thread.h"
 #include "hooks/hook_manager.h"
+#include "ui/gui.h"
 
 namespace woke::hooks {
 namespace {
@@ -32,6 +33,12 @@ BOOL WINAPI swap_buffers_detour(HDC device_context) noexcept {
 
     g_frame_count.fetch_add(1, std::memory_order_relaxed);
     game_thread::on_frame();
+
+    // Step 4: the overlay. render_overlay() is the suppression gate as well as the renderer - while
+    // the chrome is hidden it returns before ImGui::NewFrame, so a suppressed frame does no ImGui
+    // work at all (§7.8). It is called here, on the render thread, because this is the only point
+    // in the process where the game's OpenGL context is guaranteed to be current.
+    ui::render_overlay();
 
     if (g_original_swap_buffers == nullptr) {
         // Unreachable in practice (install() arms the trampoline only after the original

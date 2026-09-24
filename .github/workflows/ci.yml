@@ -77,8 +77,8 @@ jobs:
 
       # A silent skip would make the artifact look fine while a subsystem was never compiled,
       # so the built DLL is checked for markers that only those subsystems emit. This is how
-      # "CI is green" means "the JVM bridge and the hook engine are in the artifact".
-      - name: Verify the JVM bridge and hook engine are in the artifact
+      # "CI is green" means the JVM bridge, the hook engine and the overlay are in the artifact.
+      - name: Verify the JVM bridge, hook engine and overlay are in the artifact
         shell: pwsh
         run: |
           $dll = 'bin/Release/woke.dll'
@@ -91,7 +91,10 @@ jobs:
             'jvm-bridge',              # step 2: the boot step ran
             'wglSwapBuffers',          # step 3: the swap hook target
             'hook-manager',            # step 3: the MinHook wrapper is compiled in
-            'frame-pipeline'           # step 3: the frame scheduler is compiled in
+            'frame-pipeline',          # step 3: the frame scheduler is compiled in
+            'ui-theme',                # step 4: the theme table is compiled in
+            'gui-renderer',            # step 4: the ImGui host is compiled in
+            'traffic_lights.cpp'       # step 4: the component layer is compiled in
           )
           foreach ($marker in $markers) {
             if (-not $text.Contains($marker)) { throw "woke.dll is missing the marker '$marker'" }

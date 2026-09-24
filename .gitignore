@@ -24,3 +24,8 @@
 # ── OS noise ─────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
+
+# ImGui writes imgui.ini next to the executable on shutdown; the overlay keeps settings in
+# memory (fixed layout, no persistence yet), so the file is noise.
+imgui.ini
+imgui_*.ini
