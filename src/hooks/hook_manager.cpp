@@ -28,7 +28,6 @@ const char* status_text(MH_STATUS status) noexcept {
     case MH_ERROR_NOT_INITIALIZED: return "not initialized";
     case MH_ERROR_ALREADY_CREATED: return "already created";
     case MH_ERROR_NOT_CREATED: return "not created";
-    case MH_ERROR_OUT_OF_MEMORY: return "out of memory";
     case MH_ERROR_MEMORY_ALLOC: return "memory allocation failed";
     case MH_ERROR_MEMORY_PROTECT: return "memory protection change failed";
     case MH_ERROR_MODULE_NOT_FOUND: return "module not found";
@@ -107,18 +106,20 @@ Hook::~Hook() {
 }
 
 bool Hook::install(const char* name, void* target, void* detour) noexcept {
+    // The parameter shadows the nullary name() accessor inside this function, so every
+    // diagnostic here goes through a local label instead of calling the accessor.
+    const char* label = (name != nullptr) ? name : "(unnamed)";
+
     if (target_ != nullptr) {
-        WOKE_LOG_WARN("hook-manager: '%s' is already installed", name());
+        WOKE_LOG_WARN("hook-manager: '%s' is already installed", label);
         return false;
     }
     if (!g_engine_ready) {
-        WOKE_LOG_ERROR("hook-manager: '%s' cannot be installed before initialize()",
-            name != nullptr ? name : "(unnamed)");
+        WOKE_LOG_ERROR("hook-manager: '%s' cannot be installed before initialize()", label);
         return false;
     }
     if (target == nullptr || detour == nullptr) {
-        WOKE_LOG_ERROR("hook-manager: '%s' was given a null address",
-            name != nullptr ? name : "(unnamed)");
+        WOKE_LOG_ERROR("hook-manager: '%s' was given a null address", label);
         return false;
     }
     if (g_registry_size >= kMaxHooks) {
@@ -129,12 +130,12 @@ bool Hook::install(const char* name, void* target, void* detour) noexcept {
     void* original = nullptr;
     const MH_STATUS status = MH_CreateHook(target, detour, &original);
     if (status != MH_OK) {
-        WOKE_LOG_ERROR("hook-manager: creating '%s' at %p failed (%s)",
-            name != nullptr ? name : "(unnamed)", target, status_text(status));
+        WOKE_LOG_ERROR("hook-manager: creating '%s' at %p failed (%s)", label, target,
+            status_text(status));
         return false;
     }
 
-    name_ = name != nullptr ? name : "(unnamed)";
+    name_ = label;
     target_ = target;
     detour_ = detour;
     original_ = original;
