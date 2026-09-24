@@ -8,7 +8,12 @@ using woke::util::FixedString;
 
 } // namespace
 
-void test_string_buffer() {
+// The over-long value arrives as a parameter from another translation unit on purpose.
+// A literal here would be a compile-time-provable truncation, which GCC reports as
+// -Wformat-truncation - correctly, because in production a literal longer than the
+// buffer is usually a bug. Exercising the documented clip path needs a value the
+// compiler cannot fold, so the test supplies it across the TU boundary.
+void test_string_buffer(const char* overlong_text) {
     woke_test::section("FixedString");
 
     FixedString<16> text;
@@ -53,7 +58,7 @@ void test_string_buffer() {
 
     // An overflowing format must clip cleanly and stay usable afterwards.
     FixedString<8> clipped;
-    clipped.format("%s", "0123456789");
+    clipped.format("%s", overlong_text);
     WOKE_CHECK(clipped.size() == 7);
     WOKE_CHECK_STR(clipped.c_str(), "0123456");
 
