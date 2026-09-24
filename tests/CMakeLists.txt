@@ -10,8 +10,10 @@ add_executable(woke_tests
     test_string_buffer.cpp
     test_time_format.cpp
     test_mappings_parser.cpp
+    test_event_bus.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
-    ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp)
+    ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/event_bus.cpp)
 
 target_include_directories(woke_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src

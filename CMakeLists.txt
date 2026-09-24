@@ -32,7 +32,8 @@ set(WOKE_CORE_SOURCES
     src/core/logger.cpp              # Step 1: console + multi-session file logging
     src/utils/time_format.cpp        # Step 1: local-timezone timestamp formatting
     src/utils/win32_utils.cpp        # Step 1: paths, console, module resolution
-    src/jni/mappings.cpp)            # Step 2: mappings.json registry (portable)
+    src/jni/mappings.cpp             # Step 2: mappings.json registry (portable)
+    src/core/event_bus.cpp)          # Step 3: fixed-slot pub/sub (portable)
 
 if(WIN32)
     include(JavaHeaders)
@@ -47,7 +48,15 @@ if(WIN32)
             src/jni/game_instance.cpp)   # Step 2: the only game-state façade
     endif()
 
-    add_library(woke SHARED ${WOKE_CORE_SOURCES} ${WOKE_JNI_SOURCES})
+    # Step 3: the hook engine. Windows-only, but independent of the JNI bridge - the hooks
+    # must work even when the mapping asset or the JDK is unavailable.
+    set(WOKE_HOOK_SOURCES
+        src/hooks/hook_manager.cpp       # Step 3: RAII MinHook wrapper + deferred removal
+        src/hooks/swap_hook.cpp          # Step 3: wglSwapBuffers trampoline
+        src/hooks/wndproc_hook.cpp       # Step 3: GLFW window subclass + input routing
+        src/hooks/game_thread.cpp)       # Step 3: frame scheduler, tick gate, perf meter
+
+    add_library(woke SHARED ${WOKE_CORE_SOURCES} ${WOKE_JNI_SOURCES} ${WOKE_HOOK_SOURCES})
     target_include_directories(woke PRIVATE src)
     target_compile_definitions(woke PRIVATE
         WIN32_LEAN_AND_MEAN NOMINMAX

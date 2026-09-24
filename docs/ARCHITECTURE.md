@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold, Step 1 core foundation and Step 2 JVM bridge landed)
+**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold, Step 1 core foundation, Step 2 JVM bridge and Step 3 hook engine landed)
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -275,7 +275,7 @@ Every entry states: role, reusability, game-state interaction mode, and `mapping
 | `core/version.h` | Single source of UI/log version metadata (`WOKE_VERSION`, branch, build timestamp) consumed by logger, sidebar logo, and watermark. | N | — |
 | `core/lifecycle.cpp` | The **only** init-order owner: logger → mappings → JNI cache → hooks → ImGui → modules → configs; teardown in exact reverse. No system self-initializes in static constructors, making boot deterministic and hot-unload clean. | N | passes loader to cache |
 | `core/event_bus.h/.cpp` | Type-safe fixed-slot pub/sub (§4.1): `bus.subscribe<KeyEvent>(slot, fn)`; `post<T>` is a linear dispatch over pre-sized slots. Decouples modules from each other — they subscribe to events, never hold pointers to systems. | N | — |
-| `core/events.h` | Plain structs (`FrameEvent{dt,frame}`, `TickEvent`, `KeyEvent{vk,down,consumed}`, `MouseEvent`, `WorldChangeEvent`, `PlayerChangeEvent`, `ConfigLoadedEvent`, `ShutdownEvent`) — the complete vocabulary of cross-system communication. | N | — |
+| `core/events.h` | Plain structs (`FrameEvent{dt,frame,fps}`, `TickEvent`, `KeyEvent{vk,scan,down,repeat,consumed}`, `MouseEvent{button,wheel,consumed}`, `FocusEvent`, `WorldChangeEvent`, `PlayerChangeEvent`, `ConfigLoadedEvent`, `ShutdownEvent`) — the complete vocabulary of cross-system communication. | N | — |
 | `core/logger.cpp` | ANSI color-coded Win32 console (`DEBUG` gray / `INFO` cyan / `WARN` yellow / `ERROR` red), local-PC-timezone `[YYYY-MM-DD HH:MM:SS.mmm]` via `localtime_s`, dual write to `/logs/<datetime>.log` (append) and `/logs/latest.log` (overwrite-mirror) per §4.3. Preallocated format buffers. | N | — |
 | `core/config.cpp` | Walks `ModuleManager::all_settings()` and round-trips `/configs/<name>.json` via nlohmann; settings auto-participate by existing — new modules need zero config code. Load errors are logged, never fatal; unknown keys are ignored (forward compatibility). | N | — |
 
@@ -877,6 +877,7 @@ Every PR checks **all** of:
 | 0 — repo scaffold | landed | CI builds the empty DLL Release in `windows-latest`, host tests run on `ubuntu-latest` |
 | 1 — core foundation | landed | logger writes the colored console line, the timestamped session file and `latest.log`; `dllmain` boots from one worker thread |
 | 2 — JVM bridge | landed | `mappings: resolved 39 classes / 2726 methods / 1251 fields` with all 7 anchors verified; live `class_310` instance cached by `game_instance`; host tests parse the shipped asset and every schema variant |
+| 3 — hook engine | landed | `hook-manager` (RAII MinHook + deferred removal), `swap-hook` (`wglSwapBuffers`), `wndproc-hook` (GLFW subclass + input routing), `frame-scheduler` (20 Hz tick gate, perf meter); `event-bus` dispatch rules covered by host tests |
 
 D-01 and D-02 are decided (see above). Design notes worth carrying forward:
 
@@ -891,9 +892,26 @@ D-01 and D-02 are decided (see above). Design notes worth carrying forward:
   of proving it was skipped.
 - **Handles are cached inside the registry entries** as opaque `void*` slots, so a per-tick read is a
   hash hit plus a pointer read — no `std::string` is constructed and no map is grown after boot.
-- **Late client binding.** Injecting before the game creates its client instance is normal, so a
-  missing instance is a warning plus a bounded retry from the worker loop (30 s at the 10 Hz
-  cadence), never a boot failure.
+- **The event bus is portable, and that is why it is tested.** `core/event_bus.cpp` keeps no
+  windows.h, no logger and no JNI dependency, so dispatch order, per-type isolation, O(1)
+  unsubscribe, slot reuse, mutation during dispatch and the overflow policy are asserted on Linux
+  in milliseconds. A `Subscription` also carries a slot *generation*, so a handle left over from a
+  previous enable can never unsubscribe the subscriber that inherited its slot.
+- **Hook removal is deferred, not immediate.** A detour may ask for its own removal, but the actual
+  `MH_RemoveHook` happens in `service_removals()`, called at the top of the swap trampoline — a
+  point on the render thread where it is provably not inside another trampoline. The swap hook
+  itself is never removed that way; it is disabled first, then removed.
+- **The frame scheduler owns the ordering.** Frame clock, `FrameEvent`, the 20 Hz `TickEvent` gate,
+  the FPS window, world/player transition detection and the perf meter all live in one function, so
+  the order is reviewable instead of implied by call sites. Later steps insert themselves as
+  subscribers rather than editing the sequence.
+- **Suppression is a predicate, not a convention.** `needs_frame_work()` is false when nothing is
+  subscribed and no overlay is requested, and the frame then returns after one clock read and one
+  comparison — and drops the tick accumulator with it, so a long suppressed period cannot fire a
+  burst of ticks when the GUI opens.
+- **Lock keys are tracked, not polled.** `GetAsyncKeyState` reports the lock keys' toggle state,
+  which is only reliable for the foreground thread; the client snapshots them at install and keeps
+  them current from `WM_KEYUP` instead (§4.7).
 
-Next gate: Step 3 (hook engine), which moves the frame pipeline onto the game thread via the swap
-hook so JNI access becomes inherently serialized with the game (§6.2).
+Next gate: Step 4 (Dear ImGui + macOS chrome), which makes the suppression predicate above the
+thing it was written for: the ClickGUI becomes the first real `FrameEvent` consumer.

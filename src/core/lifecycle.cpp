@@ -2,16 +2,16 @@
 
 #include <atomic>
 
+#include "core/build_config.h"
+#include "core/event_bus.h"
 #include "core/logger.h"
 #include "core/version.h"
+#include "hooks/game_thread.h"
+#include "hooks/hook_manager.h"
+#include "hooks/swap_hook.h"
+#include "hooks/wndproc_hook.h"
 #include "jni/mappings.h"
 #include "utils/win32_utils.h"
-
-// 0 when the JDK's jni.h was not found at configure time: the JVM bridge sources are then
-// not part of the build, and boot reports that instead of failing to link.
-#ifndef WOKE_HAVE_JNI
-#define WOKE_HAVE_JNI 0
-#endif
 
 #if WOKE_HAVE_JNI
 #include "jni/game_instance.h"
@@ -136,10 +136,46 @@ bool start_jvm_bridge() noexcept {
 
 #endif
 
+// ── Step 3: the hook engine ──────────────────────────────────────────────────────
+
+bool start_event_bus() noexcept {
+    // A fresh bus at boot is what makes re-injection safe: a stale subscriber from a previous
+    // load would otherwise be called with a context that no longer exists.
+    woke::events::bus().reset();
+    WOKE_LOG_INFO("event-bus: ready (%zu channels x %zu slots per channel)",
+        woke::events::Bus::kMaxChannels, woke::events::Bus::kSlotsPerChannel);
+    return true;
+}
+
+bool start_frame_scheduler() noexcept {
+    hooks::game_thread::start();
+    return hooks::game_thread::running();
+}
+
+bool start_hook_engine() noexcept {
+    return hooks::initialize();
+}
+
+bool start_swap_hook() noexcept {
+    return hooks::install_swap_hook();
+}
+
+bool start_wndproc_hook() noexcept {
+    return hooks::install_wndproc_hook();
+}
+
 constexpr Step kBootSteps[] = {
+    // index   step                run                      depends on
     {"logger", &start_logger, -1},
     {"mappings", &start_mappings, 0},
     {"jvm-bridge", &start_jvm_bridge, 1},
+    {"event-bus", &start_event_bus, -1},
+    // The scheduler runs before the hook that will drive it, so the very first swap already
+    // has a scheduler to hand the frame to.
+    {"frame-scheduler", &start_frame_scheduler, 3},
+    {"hook-engine", &start_hook_engine, -1},
+    {"swap-hook", &start_swap_hook, 5},
+    {"wndproc-hook", &start_wndproc_hook, 5},
 };
 
 constexpr std::size_t kStepCount = sizeof(kBootSteps) / sizeof(kBootSteps[0]);
@@ -215,6 +251,9 @@ void boot(HMODULE self) noexcept {
         WOKE_LOG_INFO("session log: %ls", session_path);
     }
 
+    WOKE_LOG_INFO("hooks: %zu active, %zu queued for removal | %s", hooks::active_hook_count(),
+        hooks::queued_removal_count(), hooks::wndproc_hook_installed() ? "input routed" : "input unavailable");
+
 #if WOKE_HAVE_JNI
     WOKE_LOG_INFO("jvm-bridge: %zu thread(s) attached, %zu handle(s) unresolved",
         jni::attached_thread_count(), game::unresolved_handle_count());
@@ -253,8 +292,16 @@ void shutdown() noexcept {
     WOKE_LOG_INFO("shutdown: unloading %s %s (boot %s)", version::kClientName, version::kVersion,
         g_boot_ok ? "clean" : "degraded");
 
-    // Reverse of the boot order: the game façade releases its global ref to the client
-    // first, then the cache releases every class reference, then the threads detach.
+    // Reverse of the boot order (§4.5). The window procedure is restored before MinHook shuts
+    // down, and both hooks are disabled before the engine is uninitialised: after this point
+    // nothing can enter a trampoline, which is what makes a hot unload safe.
+    hooks::game_thread::stop();
+    hooks::remove_wndproc_hook();
+    hooks::remove_swap_hook();
+    hooks::shutdown();
+
+    // Then the game façade releases its global ref to the client, the cache releases every
+    // class reference, and the threads detach.
 #if WOKE_HAVE_JNI
     game::shutdown();
     jni::unbind_registry();

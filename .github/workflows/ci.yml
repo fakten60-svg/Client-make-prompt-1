@@ -75,19 +75,28 @@ jobs:
       - name: Run host tests
         run: ctest --test-dir build -C Release --output-on-failure
 
-      # A silent skip would make the artifact look fine while the JVM bridge was never
-      # compiled, so the built DLL is checked for the bridge's own log strings.
-      - name: Verify the JVM bridge is in the artifact
+      # A silent skip would make the artifact look fine while a subsystem was never compiled,
+      # so the built DLL is checked for markers that only those subsystems emit. This is how
+      # "CI is green" means "the JVM bridge and the hook engine are in the artifact".
+      - name: Verify the JVM bridge and hook engine are in the artifact
         shell: pwsh
         run: |
           $dll = 'bin/Release/woke.dll'
           if (-not (Test-Path $dll)) { throw "$dll was not produced" }
           $bytes = [System.IO.File]::ReadAllBytes($dll)
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-          foreach ($marker in @('jvm-bridge', 'mappings: resolved', 'JNI_GetCreatedJavaVMs')) {
+          $markers = @(
+            'JNI_GetCreatedJavaVMs',   # step 2: the JVM bridge is compiled in
+            'mappings: resolved',      # step 2: the registry reports its anchor tally
+            'jvm-bridge',              # step 2: the boot step ran
+            'wglSwapBuffers',          # step 3: the swap hook target
+            'hook-manager',            # step 3: the MinHook wrapper is compiled in
+            'frame-pipeline'           # step 3: the frame scheduler is compiled in
+          )
+          foreach ($marker in $markers) {
             if (-not $text.Contains($marker)) { throw "woke.dll is missing the marker '$marker'" }
           }
-          Write-Host 'JVM bridge markers are present in woke.dll'
+          Write-Host 'JVM bridge and hook engine markers are present in woke.dll'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
