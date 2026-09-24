@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation gated on owner sign-off
+**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold + Step 1 core foundation landed)
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -467,8 +467,8 @@ a missing JVM or stale mapping degrades to a console-only DLL, never a crash).
 
 ```cpp
 jclass    cls = jni::class_of("class_310");              // cached jclass (global ref)
-jmethodID m   = jni::method_of("class_310", "method_1554");
-jfieldID  fid = jni::field_of("class_746", "field_1724");
+jmethodID m   = jni::method_of("class_310", "method_1551"); // MinecraftClient.getInstance
+jfieldID  fid = jni::field_of("class_746", "field_1724");   // player field on the client
 ```
 
 - Internally: hash lookup `mappings.cpp` registry → first call resolves via `FindClass` /
@@ -490,22 +490,46 @@ jfieldID  fid = jni::field_of("class_746", "field_1724");
 
 ### 5.4 `mappings.json` — schema contract & defensive loading
 
-The file is referenced as "present at root" by the project spec but is **absent in the current
-workspace**. The loader is therefore specified defensively and the schema is fixed as:
+The asset is generated from the authoritative upstream source instead of being written by hand.
+`tools/generate_mappings.py` reads the official Yarn archive and emits the asset:
+
+```bash
+curl -sL -o build/tmp/yarn-1.21.11+build.6-v2.jar \
+  https://maven.fabricmc.net/net/fabricmc/yarn/1.21.11+build.6/yarn-1.21.11+build.6-v2.jar
+python3 tools/generate_mappings.py --jar build/tmp/yarn-1.21.11+build.6-v2.jar \
+  --version 1.21.11 --source net.fabricmc:yarn:1.21.11+build.6 --out mappings.json
+```
+
+Current asset: **39 classes / 2726 methods / 1251 fields** (461 KB), produced from
+`net.fabricmc:yarn:1.21.11+build.6`. Every curated class resolved; the generator prints a warning
+list instead of failing when upstream renames one. Emitted schema (real values, not examples):
 
 ```json
 {
   "version": "1.21.11",
   "namespace": "intermediary",
+  "source": "net.fabricmc:yarn:1.21.11+build.6",
   "classes": {
     "MinecraftClient": {
+      "yarn": "net/minecraft/client/MinecraftClient",
       "intermediary": "net/minecraft/class_310",
-      "methods":   { "getPlayer": "method_1554", "getWorld": "method_1523" },
-      "fields":    { "player": "field_1724", "world": "field_1687" }
+      "aliases": ["MinecraftClient", "class_310", "net/minecraft/class_310"],
+      "methods": {
+        "getInstance": { "intermediary": "method_1551", "descriptor": "()Lnet/minecraft/class_310;" }
+      },
+      "fields": {
+        "player": { "intermediary": "field_1724", "descriptor": "Lnet/minecraft/class_746;" }
+      }
     }
   }
 }
 ```
+
+Member descriptors are expressed with intermediary class names, which is exactly what
+`GetMethodID`/`GetFieldID` require at runtime, so the JNI layer never has to build a signature by
+hand. Intermediary member names are **not** always `method_XXXX`/`field_XXXX`: recent Yarn builds
+also emit `comp_XXXX` for record components, so nothing in the client may assume a name prefix.
+Aliases index the same entry, which is what lets §5.2 look classes up by short intermediary key.
 
 Loader tolerance (all variants accepted, parsed once at boot):
 
@@ -516,11 +540,13 @@ Loader tolerance (all variants accepted, parsed once at boot):
 4. Method/field values as either objects or plain `"method_XXXX"` strings.
 
 Failure policy: missing file → `ERROR` log, all handles invalid, JNI modules auto-disable (client
-still boots, GUI works, config works). Unknown key → one-time `WARN`. Well-known anchors
-(`class_310`, `class_746`, `class_638`, `class_315`) are asserted at boot with an `INFO` line:
-`mappings: resolved N classes / M methods / K fields`. **Exact method/field IDs for 1.21.11 are
-resolved at implementation time from the provided `mappings.json` — the Yarn 1.21.11 branch is the
-source of truth, never hard-coded guesses.**
+still boots, GUI works, config works). Unknown key → one-time `WARN`. Verified anchors asserted at
+boot with an `INFO` line (`mappings: resolved N classes / M methods / K fields`) include
+`class_310` (MinecraftClient), `class_746` (ClientPlayerEntity), `class_638` (ClientWorld),
+`class_315` (GameOptions), plus the spot-checked members `method_1551` (getInstance),
+`field_1724` (player) and `field_1687` (world). **IDs are read from generated data, never guessed;
+a game update is repaired by regenerating the asset (`tools/generate_mappings.py`) and adding any
+new class to its curated list.**
 
 ---
 
@@ -826,8 +852,8 @@ Every PR checks **all** of:
 
 | # | Decision | Rationale |
 |---|---|---|
-| D-01 | Include `launcher/` injector in-repo — **pending owner choice** | Convenience vs. scope; third-party injector equally valid |
-| D-02 | Movement module final list — **pending owner choice** | Scope sensitivity: ship minimal visible QoL set first |
+| D-01 | **DECIDED:** ship the optional `launcher/` injector in-repo (`WOKE_BUILD_INJECTOR`, default ON) | Self-contained local testing; a standard `LoadLibraryW` loader is not an evasion tool and keeps the repo reproducible without third-party injectors |
+| D-02 | **DECIDED:** Movement ships exactly Auto Sprint, Safe Walk, Velocity Display (3 modules) | Minimal visible QoL set; any additional movement behavior is a separate, explicitly reviewed decision |
 | D-03 | OpenGL (`wglSwapBuffers`) primary; DXGI behind flag | 1.21.11 + LWJGL renders OpenGL; DXGI kept for contingency |
 | D-04 | Swap hook *is* the main-thread dispatcher (no `mc.execute()` bridge) | Structural thread-safety; removes cross-thread handoff entirely |
 | D-05 | `/MD` CRT default; `/MT` documented fallback | Minimal surprises inside the JVM process |
@@ -837,5 +863,7 @@ Every PR checks **all** of:
 
 ---
 
-**End of blueprint.** Implementation begins at Roadmap Step 0 on owner sign-off; pending choices
-D-01 and D-02 can be answered with the sign-off.
+**End of blueprint.** Implementation is underway: Roadmap Step 0 (scaffold, CI, injector) and
+Step 1 (core foundation: logger, time formatting, win32 utils, lifecycle, DLL entry) are landed.
+D-01 and D-02 are decided (see above). Next gate: Step 2 (JVM bridge), which consumes the real
+`mappings.json` generated from `net.fabricmc:yarn:1.21.11+build.6`.

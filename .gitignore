@@ -1,0 +1,26 @@
+# ── Build artifacts ──────────────────────────────────────────────
+/build/
+/bin/
+/out/
+*.dll
+*.obj
+*.pdb
+*.lib
+*.exp
+*.ilk
+*.idb
+
+# ── IDE ──────────────────────────────────────────────────────────
+/.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# ── Runtime output (produced inside the game directory) ──────────
+/logs/
+/configs/
+
+# ── OS noise ─────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
