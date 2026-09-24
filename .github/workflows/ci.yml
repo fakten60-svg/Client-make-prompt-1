@@ -94,7 +94,8 @@ jobs:
             'frame-pipeline',          # step 3: the frame scheduler is compiled in
             'ui-theme',                # step 4: the theme table is compiled in
             'gui-renderer',            # step 4: the ImGui host is compiled in
-            'traffic_lights.cpp'       # step 4: the component layer is compiled in
+            'chrome shown',            # step 4: the overlay lifecycle is compiled in
+            'clickgui'                 # step 4: the chrome composition is compiled in
           )
           foreach ($marker in $markers) {
             if (-not $text.Contains($marker)) { throw "woke.dll is missing the marker '$marker'" }
