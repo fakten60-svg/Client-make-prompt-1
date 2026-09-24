@@ -36,7 +36,9 @@ file(GLOB _woke_jdk_roots
     "$ENV{ProgramFiles}/Zulu/zulu-*"
     "$ENV{ProgramFiles}/Amazon Corretto/*"
     "$ENV{ProgramFiles}/BellSoft/*jdk*"
-    "$ENV{ProgramFiles(x86)}/Java/jdk-*")
+    # Literal path because CMake's $ENV{...} cannot express 'ProgramFiles(x86)' - a
+    # parenthesis is not valid in a variable name, and there is no escape for it.
+    "C:/Program Files (x86)/Java/jdk-*")
 foreach(_root IN LISTS _woke_jdk_roots)
     list(APPEND _woke_jni_candidates "${_root}/include")
 endforeach()
