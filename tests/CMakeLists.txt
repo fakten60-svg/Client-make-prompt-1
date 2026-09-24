@@ -13,13 +13,17 @@ add_executable(woke_tests
     test_event_bus.cpp
     test_ui_animation.cpp
     test_ui_draw.cpp
+    test_module_system.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp
     ${CMAKE_SOURCE_DIR}/src/core/event_bus.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/module_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/theme.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/animation/animation_controller.cpp
-    ${CMAKE_SOURCE_DIR}/src/ui/components/traffic_lights.cpp)
+    ${CMAKE_SOURCE_DIR}/src/ui/components/traffic_lights.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/components/pill_toggle.cpp)
 
 target_include_directories(woke_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src

@@ -3,9 +3,13 @@
 #include <atomic>
 
 #include "core/build_config.h"
+#include "core/config.h"
 #include "core/event_bus.h"
+#include "core/events.h"
 #include "core/logger.h"
 #include "core/version.h"
+#include "modules/examples.h"
+#include "modules/module_manager.h"
 #include "hooks/game_thread.h"
 #include "hooks/hook_manager.h"
 #include "hooks/swap_hook.h"
@@ -28,6 +32,15 @@ constexpr int kGameInstanceRetryBudget = 300; // 30 s at the idle cadence
 
 std::atomic<bool> g_unload_requested{false};
 bool g_boot_ok = false;
+
+// The module objects. Fixed at boot, owned by this translation unit, registered into the
+// process-wide manager; the config engine and the GUI reach them only through the registry.
+woke::modules::SprintState g_sprint_module;
+woke::modules::ZoomAmount g_zoom_module;
+
+// Module fan-out + keybind subscriptions, owned by the modules boot step (released at shutdown).
+woke::events::Subscription g_keybind_subscription{};
+woke::events::Subscription g_tick_subscription{};
 
 // The mapping registry is the one core object that outlives its own boot step: the JVM
 // bridge resolves every handle through it for the whole session.
@@ -185,6 +198,66 @@ bool start_ui_window() noexcept {
     return true;
 }
 
+// ── Step 5: the module system ──────────────────────────────────────────────
+
+// Keybind dispatch (§4.4): the WndProc's KeyEvent stream feeds the module manager after the GUI
+// has had its chance to consume the key. Press-mode only in step 5; hold-mode arrives with the
+// movement modules in step 8.
+void dispatch_module_keybind(events::KeyEvent& event) {
+    if (!event.down || event.repeat) {
+        return;
+    }
+    if (modules::manager().handle_key(event.virtual_key, event.down)) {
+        event.consumed = true;
+    }
+}
+
+// The registry's tick fan-out: enabled modules receive the tick at the game's 20 Hz cadence.
+// Rendering fan-out (on_render) is a no-op for the two step-5 example modules, but the plumbing
+// is live so step 7's visual modules do not need to touch the scheduler.
+void dispatch_tick(events::TickEvent& event) noexcept {
+    modules::manager().on_tick(event.delta_seconds);
+}
+
+bool start_modules() noexcept {
+    woke::modules::ModuleManager& registry = woke::modules::manager();
+    registry.reset();
+    if (!registry.add(&g_sprint_module) || !registry.add(&g_zoom_module)) {
+        WOKE_LOG_ERROR("modules: registration failed");
+        return false;
+    }
+
+    // Restore the last session's state (configs/default.json). First boot keeps defaults: a
+    // missing file is the normal state, not an error.
+    const config::LoadReport loaded = config::load("default");
+    if (!loaded.parsed) {
+        WOKE_LOG_INFO("modules: no saved config - starting from defaults");
+    } else {
+        WOKE_LOG_INFO(
+            "modules: config loaded (%zu module(s) matched, %zu value(s) applied, %zu unknown "
+            "module(s), %zu unknown setting(s), %zu wrong-typed)",
+            loaded.modules_matched, loaded.settings_applied, loaded.unknown_modules,
+            loaded.unknown_settings, loaded.wrong_type);
+    }
+
+    WOKE_LOG_INFO("modules: %zu registered, %zu enabled", registry.count(),
+        registry.enabled_count());
+
+    // The subscriptions are taken after the config load so a load cannot race the first key.
+    g_keybind_subscription = woke::events::bus().subscribe<events::KeyEvent, &dispatch_module_keybind>();
+    g_tick_subscription = woke::events::bus().subscribe<events::TickEvent, &dispatch_tick>();
+    return true;
+}
+
+bool save_default_config() noexcept {
+    if (!config::save("default")) {
+        WOKE_LOG_WARN("modules: the default config could not be written");
+        return false;
+    }
+    WOKE_LOG_INFO("modules: default config saved");
+    return true;
+}
+
 constexpr Step kBootSteps[] = {
     // index   step                run                      depends on
     {"logger", &start_logger, -1},
@@ -201,6 +274,9 @@ constexpr Step kBootSteps[] = {
     // render, but neither order is a hard dependency: a GUI without a window simply stays dark.
     {"ui", &start_ui, 3},
     {"ui-window", &start_ui_window, 7},
+    // The registry feeds the GUI's category pages, so it must exist before the first frame; the
+    // config load needs only the registry itself.
+    {"modules", &start_modules, 3},
 };
 
 constexpr std::size_t kStepCount = sizeof(kBootSteps) / sizeof(kBootSteps[0]);
@@ -307,6 +383,11 @@ void boot(HMODULE self) noexcept {
 
 void run_worker_loop() noexcept {
     while (!g_unload_requested.load(std::memory_order_acquire)) {
+        // Deferred module saves (§4.2) are serviced here, on the worker thread: a GUI toggle
+        // or keybind posts a request instead of writing config files on the render path.
+        if (woke::config::service_saves()) {
+            WOKE_LOG_DEBUG("modules: deferred config save written");
+        }
         (void)woke::logger::flush();
         retry_game_instance();
         ::Sleep(kWorkerIdleSleepMs);
@@ -329,6 +410,17 @@ void shutdown() noexcept {
     hooks::game_thread::stop();
     hooks::remove_wndproc_hook();
     hooks::remove_swap_hook();
+
+    // The session's final state lands in configs/default.json before anything unsubscribes:
+    // config IO runs on this (worker) thread, never in on_tick/on_render (§4.2).
+    (void)save_default_config();
+
+    // Module dispatch stops with the bus reset (below); the subscriptions are dropped first so
+    // no tick or key can reach the registry while its modules are being torn down.
+    woke::events::bus().unsubscribe(g_keybind_subscription);
+    woke::events::bus().unsubscribe(g_tick_subscription);
+    g_keybind_subscription = woke::events::Subscription{};
+    g_tick_subscription = woke::events::Subscription{};
 
     // With the swap hook gone nothing can call render_overlay() and with the subclass restored
     // nothing can call handle_window_message(), so the overlay can release its GL objects and its
