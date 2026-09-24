@@ -21,9 +21,9 @@ DWORD WINAPI worker_main(LPVOID /*parameter*/) noexcept {
 
     woke::lifecycle::shutdown();
 
-    // Clean self-eject: no thread is left behind inside the game process.
+    // Clean self-eject: no thread is left behind inside the game process. This call is
+    // declared noreturn, so there is deliberately no code after it.
     ::FreeLibraryAndExitThread(g_self, 0);
-    return 0;  // unreachable
 }
 
 } // namespace

@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DWOKE_BUILD_TESTS=ON
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DWOKE_BUILD_TESTS=ON -DWOKE_WARNINGS_AS_ERRORS=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -53,7 +53,9 @@ jobs:
           }
           $chosen = ($generators | Sort-Object Major -Descending | Select-Object -First 1).Name
           Write-Host "using generator: $chosen"
-          cmake -B build -G $chosen -A x64 -DWOKE_BUILD_TESTS=ON
+          # Warnings are errors for first-party targets only; vendored code is exempt by
+          # construction because the warning policy is applied per first-party target.
+          cmake -B build -G $chosen -A x64 -DWOKE_BUILD_TESTS=ON -DWOKE_WARNINGS_AS_ERRORS=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel

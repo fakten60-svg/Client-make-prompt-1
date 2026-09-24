@@ -228,13 +228,18 @@ bool init() noexcept {
     session_path += widen_ascii(session_name.c_str());
     session_path += L".log";
 
-    g_session = ::_wfopen(session_path.c_str(), L"w");
-    if (g_session != nullptr) {
+    // Secure CRT variants: the plain _wfopen form is deprecated by MSVC, and the fix is
+    // to use the checked call rather than to silence the warning.
+    if (::_wfopen_s(&g_session, session_path.c_str(), L"w") == 0 && g_session != nullptr) {
         g_session_path = session_path;
+    } else {
+        g_session = nullptr;
     }
 
     const std::wstring latest_path = logs_directory + L"latest.log";
-    g_latest = ::_wfopen(latest_path.c_str(), L"w");
+    if (::_wfopen_s(&g_latest, latest_path.c_str(), L"w") != 0) {
+        g_latest = nullptr;
+    }
 
     g_initialized = true;
 
