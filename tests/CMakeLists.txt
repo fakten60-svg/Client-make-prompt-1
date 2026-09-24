@@ -11,9 +11,15 @@ add_executable(woke_tests
     test_time_format.cpp
     test_mappings_parser.cpp
     test_event_bus.cpp
+    test_ui_animation.cpp
+    test_ui_draw.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp
-    ${CMAKE_SOURCE_DIR}/src/core/event_bus.cpp)
+    ${CMAKE_SOURCE_DIR}/src/core/event_bus.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/theme.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/animation/animation_controller.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/components/traffic_lights.cpp)
 
 target_include_directories(woke_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -26,7 +32,11 @@ target_include_directories(woke_tests PRIVATE
 target_compile_definitions(woke_tests PRIVATE
     WOKE_MAPPINGS_ASSET="${CMAKE_SOURCE_DIR}/mappings.json")
 
-target_link_libraries(woke_tests PRIVATE nlohmann_json)
+# ImGui's core is host-independent, so the draw helpers and the components are rendered headlessly
+# here: the test asserts the draw data ImVec2/ImDrawList code produces, which is the closest a
+# Linux runner can get to "the chrome draws something sane". The platform backends are not needed
+# and are not linked.
+target_link_libraries(woke_tests PRIVATE nlohmann_json imgui)
 
 woke_apply_warnings(woke_tests)
 

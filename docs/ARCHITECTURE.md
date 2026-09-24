@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold, Step 1 core foundation, Step 2 JVM bridge and Step 3 hook engine landed)
+**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold through Step 4 ImGui + macOS chrome landed)
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -813,8 +813,13 @@ Every PR checks **all** of:
 
 ### 12.1 Host tests (CI, no Minecraft required — `tests/` target)
 
-- `test_easing` — easing/lerp/spring invariants: monotonicity, endpoints, dt-independence
-  (identical accumulated progress at 60/240 Hz), color lerp bounds.
+- `test_ui_animation` — easing/lerp/spring invariants: monotonicity, exact endpoints,
+  dt-independence (identical accumulated progress at 60/240 Hz), colour lerp bounds, the animation
+  controller's generation-counted slots and its overflow policy, and the theme's navigation table,
+  palette and style-token/metric agreement.
+- `test_ui_draw` — the draw layer headlessly: ImGui's core is linked into the test target on every
+  host, so `render_utils` and the traffic-light component are rendered into a real frame and the
+  resulting draw data is asserted, together with the component's hover/press/click state machine.
 - `test_config_roundtrip` — every setting type → JSON → identical settings; unknown-key and
   missing-key tolerance; schema-version forward compat.
 - `test_mappings_parser` — §5.4 schema variants (1)–(4); missing file, malformed JSON, unknown
@@ -878,6 +883,44 @@ Every PR checks **all** of:
 | 1 — core foundation | landed | logger writes the colored console line, the timestamped session file and `latest.log`; `dllmain` boots from one worker thread |
 | 2 — JVM bridge | landed | `mappings: resolved 39 classes / 2726 methods / 1251 fields` with all 7 anchors verified; live `class_310` instance cached by `game_instance`; host tests parse the shipped asset and every schema variant |
 | 3 — hook engine | landed | `hook-manager` (RAII MinHook + deferred removal), `swap-hook` (`wglSwapBuffers`), `wndproc-hook` (GLFW subclass + input routing), `frame-scheduler` (20 Hz tick gate, perf meter); `event-bus` dispatch rules covered by host tests |
+| 4 — ImGui + macOS chrome | landed | `ui/theme` (palette + metrics tokens), `ui/gui` (ImGui host, chrome composition, spring open/close, diagnostics), `ui/components/traffic_lights`, `ui/animation/*` (curves + substepped springs), `utils/render_utils`; suppression in the swap trampoline, WndProc input routed to ImGui first, host tests render the draw layer headlessly |
+
+**Step 4 design notes worth carrying forward** (these supersede the older `Next gate: Step 4` line at
+the very end of this document, which was written while step 3 was landing):
+
+- **The suppression gate is in the trampoline, not in a convention.** `swap_hook` calls
+  `ui::render_overlay()` once per frame; while the chrome is hidden *and* its close spring has come
+  to rest, that call returns after one comparison — no `ImGui::NewFrame`, no vertex generation, no
+  draw-list traversal (§7.8). The frame pipeline itself keeps running (tick gate, world/player
+  transitions, perf meter): `overlay_requested` is about overlay work, not about the game-state
+  watch.
+- **ImGui is split into `imgui` and `imgui_backends`.** The core is built on every host, which is
+  what lets the Linux CI job render `utils/render_utils` and the components headlessly and assert
+  the draw data. Only the Win32 + OpenGL3 glue is Windows-only, because only it *is* Windows-only
+  (D-06).
+- **The backends initialise lazily, inside the swap detour.** `ImGui_ImplOpenGL3_Init` needs a
+  current GL context, and the only place in this process where one is guaranteed is the render
+  thread inside `wglSwapBuffers`. Boot therefore creates the ImGui context and the style, and the GL
+  objects are created on the first frame that has something to draw.
+- **One clock, one tick.** Components only steer their own animation targets in `animate()`; the GUI
+  owns the single `AnimationController::tick()` for the frame. Springs are integrated in at most
+  1/120 s substeps, so the scheduler's 0.25 s frame-delta clamp cannot launch the window off screen.
+- **The GUI owns the input it consumes.** `wndproc_hook` offers every message to
+  `ui::handle_window_message()` first: ImGui's Win32 backend receives it, and the ClickGUI then
+  swallows pointer, wheel and character input while it is visible, so the game cannot mine, attack
+  or turn the camera behind the overlay. The toggle key is deliberately *not* swallowed — the event
+  bus is what closes the GUI — and `io.MouseDrawCursor` with `ImGuiConfigFlags_NoMouseCursorChange`
+  gives the user a cursor inside a window whose OS cursor the game has captured.
+- **Theme tokens are portable and asserted.** Palette entries are written as the blueprint's hex
+  values and converted at compile time, so the host tests check §7.2's traffic-light column and the
+  style-token/metric agreement on Linux, and a re-theme stays one file.
+- **What is honestly still empty.** The six module categories, Settings, Configs, Socials and
+  Keybinds render their real navigation rows and an explicit empty state; they are filled in by
+  steps 5, 6 and 8. Diagnostics and Theme are functional today: live subsystem counters and a
+  palette preview built from the tokens.
+
+Next gate: Step 5 (the module system), which turns the ClickGUI's empty categories into real
+entries — category badges, module cards, and the config round-trip.
 
 D-01 and D-02 are decided (see above). Design notes worth carrying forward:
 

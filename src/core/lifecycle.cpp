@@ -11,6 +11,7 @@
 #include "hooks/swap_hook.h"
 #include "hooks/wndproc_hook.h"
 #include "jni/mappings.h"
+#include "ui/gui.h"
 #include "utils/win32_utils.h"
 
 #if WOKE_HAVE_JNI
@@ -164,6 +165,26 @@ bool start_wndproc_hook() noexcept {
     return hooks::install_wndproc_hook();
 }
 
+// ── Step 4: the ClickGUI ────────────────────────────────────────────────────────
+
+bool start_ui() noexcept {
+    // Creates the ImGui context, applies the theme tokens and subscribes the GUI's own input
+    // handlers. No window and no GL context are touched: the backends are initialised lazily
+    // inside the swap trampoline, which is the only place a GL initialisation is valid.
+    return ui::initialize();
+}
+
+bool start_ui_window() noexcept {
+    // Hands the subclassed window to the overlay. A missing window is the documented degraded
+    // mode (R-02): the GUI stays dark and the client keeps running.
+    ui::attach_window(hooks::window_handle());
+    if (hooks::window_handle() == nullptr) {
+        WOKE_LOG_WARN("gui: no game window yet - the overlay waits for the renderer backend");
+        return false;
+    }
+    return true;
+}
+
 constexpr Step kBootSteps[] = {
     // index   step                run                      depends on
     {"logger", &start_logger, -1},
@@ -176,6 +197,10 @@ constexpr Step kBootSteps[] = {
     {"hook-engine", &start_hook_engine, -1},
     {"swap-hook", &start_swap_hook, 5},
     {"wndproc-hook", &start_wndproc_hook, 5},
+    // The GUI needs the bus (for its keybind and focus), and it needs the window before it can
+    // render, but neither order is a hard dependency: a GUI without a window simply stays dark.
+    {"ui", &start_ui, 3},
+    {"ui-window", &start_ui_window, 7},
 };
 
 constexpr std::size_t kStepCount = sizeof(kBootSteps) / sizeof(kBootSteps[0]);
@@ -254,6 +279,12 @@ void boot(HMODULE self) noexcept {
     WOKE_LOG_INFO("hooks: %zu active, %zu queued for removal | %s", hooks::active_hook_count(),
         hooks::queued_removal_count(), hooks::wndproc_hook_installed() ? "input routed" : "input unavailable");
 
+    const ui::Stats overlay = ui::stats();
+    WOKE_LOG_INFO("gui: %s | %zu animation slot(s) | toggle key 0x%02X",
+        overlay.initialized ? (overlay.renderer_ready ? "renderer ready" : "waiting for the game window")
+                            : "disabled",
+        overlay.animation_slots, static_cast<unsigned int>(ui::toggle_key()));
+
 #if WOKE_HAVE_JNI
     WOKE_LOG_INFO("jvm-bridge: %zu thread(s) attached, %zu handle(s) unresolved",
         jni::attached_thread_count(), game::unresolved_handle_count());
@@ -298,6 +329,11 @@ void shutdown() noexcept {
     hooks::game_thread::stop();
     hooks::remove_wndproc_hook();
     hooks::remove_swap_hook();
+
+    // With the swap hook gone nothing can call render_overlay() and with the subclass restored
+    // nothing can call handle_window_message(), so the overlay can release its GL objects and its
+    // ImGui context without racing the render thread.
+    ui::shutdown();
     hooks::shutdown();
 
     // Then the game façade releases its global ref to the client, the cache releases every

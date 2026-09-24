@@ -25,23 +25,41 @@ FetchContent_Declare(woke_json
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  woke-does-not-build-upstream-cmakelists)
 
-FetchContent_MakeAvailable(woke_json)
-
-# ── nlohmann/json (header only) ──
-add_library(nlohmann_json INTERFACE)
-target_include_directories(nlohmann_json INTERFACE ${woke_json_SOURCE_DIR}/include)
-
-# ImGui and MinHook are only needed by the injected artifact, so they are skipped entirely
-# on a non-Windows host instead of being cloned for nothing.
-if(NOT WIN32)
-    return()
-endif()
-
 FetchContent_Declare(woke_imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG        ${WOKE_IMGUI_TAG}
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  woke-does-not-build-upstream-cmakelists)
+
+FetchContent_MakeAvailable(woke_json woke_imgui)
+
+# ── nlohmann/json (header only) ──
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE ${woke_json_SOURCE_DIR}/include)
+
+# ── Dear ImGui, split so its core is host-independent ──
+#
+# The core is built on every host on purpose: the draw helpers and the components (utils/
+# render_utils.cpp, ui/components/*) only need imgui.h and an ImDrawList, so the Linux runner can
+# render them headlessly and assert the draw data. The platform backends stay Windows-only,
+# because that is what they are - ImGui's Win32 and OpenGL3 glue, which is also the only renderer
+# path Minecraft uses (D-06: Win32 + OpenGL3, no DXGI/docking extras).
+add_library(imgui STATIC
+    ${woke_imgui_SOURCE_DIR}/imgui.cpp
+    ${woke_imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${woke_imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${woke_imgui_SOURCE_DIR}/imgui_widgets.cpp)
+target_include_directories(imgui PUBLIC ${woke_imgui_SOURCE_DIR})
+target_compile_definitions(imgui PUBLIC
+    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX)
+
+# MinHook is only needed by the injected artifact, so it is skipped on a non-Windows host
+# instead of being cloned for nothing.
+if(NOT WIN32)
+    return()
+endif()
 
 FetchContent_Declare(woke_minhook
     GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
@@ -49,23 +67,14 @@ FetchContent_Declare(woke_minhook
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  woke-does-not-build-upstream-cmakelists)
 
-FetchContent_MakeAvailable(woke_imgui woke_minhook)
+FetchContent_MakeAvailable(woke_minhook)
 
-# ── Dear ImGui (Win32 + OpenGL3 backends only — the renderer path Minecraft uses) ──
-add_library(imgui STATIC
-    ${woke_imgui_SOURCE_DIR}/imgui.cpp
-    ${woke_imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${woke_imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${woke_imgui_SOURCE_DIR}/imgui_widgets.cpp
+# ── Dear ImGui platform backends (Win32 + OpenGL3 only — the renderer path Minecraft uses) ──
+add_library(imgui_backends STATIC
     ${woke_imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
     ${woke_imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
-target_include_directories(imgui PUBLIC
-    ${woke_imgui_SOURCE_DIR}
-    ${woke_imgui_SOURCE_DIR}/backends)
-target_compile_definitions(imgui PUBLIC
-    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX)
+target_include_directories(imgui_backends PUBLIC ${woke_imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui_backends PUBLIC imgui)
 
 # ── MinHook (x64 trampoline engine) ──
 add_library(minhook STATIC
