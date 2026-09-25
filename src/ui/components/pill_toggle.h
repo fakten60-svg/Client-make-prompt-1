@@ -20,6 +20,8 @@ public:
 
     void set_area(const Rect& area) noexcept;
     void set_value(bool on) noexcept;
+    // Opacity, so the switch fades with its card during the ClickGUI's open/close animation.
+    void set_alpha(float alpha) noexcept;
 
     void render(ImDrawList* draw_list, const Rect& area) noexcept override;
     bool handle_input(const Input& input) noexcept override;
@@ -37,6 +39,7 @@ private:
     Rect area_{};
     bool target_on_ = false;
     bool clicked_ = false;
+    float alpha_ = 1.0f;
 };
 
 } // namespace woke::ui::components

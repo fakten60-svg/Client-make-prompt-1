@@ -70,6 +70,18 @@ void set_toggle_key(int virtual_key) noexcept;
 // GUI's own bookkeeping (card hover states, enabled badges) in step with the registry.
 [[nodiscard]] std::size_t registered_module_count() noexcept;
 
+// ── Cross-system notifications (roadmap step 6) ───────────────────────────────────
+// The toast pool belongs to the overlay, but not every state change originates in it: the module
+// keybind dispatcher is a boot-sequence subscriber. These are the entry points it calls, so a
+// keybind toggle is as visible as a ClickGUI click (§4.4). Both are no-ops before initialize().
+
+// Reports whatever module(s) `virtual_key` just toggled. The GUI resolves the names and pushes
+// one toast per module, which keeps the toast text in the layer that owns the toast pool.
+void notify_keybind_toggle(int virtual_key) noexcept;
+
+// A generic toast. `warning` selects the yellow accent.
+void notify(const char* title, const char* message, bool warning = false) noexcept;
+
 struct Stats {
     bool initialized = false;
     bool renderer_ready = false;

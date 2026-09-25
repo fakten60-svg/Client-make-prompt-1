@@ -14,6 +14,7 @@ add_executable(woke_tests
     test_ui_animation.cpp
     test_ui_draw.cpp
     test_module_system.cpp
+    test_widgets.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp
@@ -23,7 +24,12 @@ add_executable(woke_tests
     ${CMAKE_SOURCE_DIR}/src/ui/theme.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/animation/animation_controller.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/components/traffic_lights.cpp
-    ${CMAKE_SOURCE_DIR}/src/ui/components/pill_toggle.cpp)
+    ${CMAKE_SOURCE_DIR}/src/ui/components/pill_toggle.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/components/keybind_badge.cpp       # Step 6: the [KEY: X] chip
+    ${CMAKE_SOURCE_DIR}/src/ui/components/module_card.cpp         # Step 6: the module card
+    ${CMAKE_SOURCE_DIR}/src/ui/components/sidebar.cpp             # Step 6: navigation + badges
+    ${CMAKE_SOURCE_DIR}/src/ui/components/search_bar.cpp          # Step 6: the module filter
+    ${CMAKE_SOURCE_DIR}/src/ui/notifications.cpp)                 # Step 6: the toast pool
 
 target_include_directories(woke_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src

@@ -46,8 +46,20 @@ set(WOKE_UI_PORTABLE_SOURCES
 set(WOKE_UI_SOURCES
     src/utils/render_utils.cpp       # Step 4: the only ImDrawList primitive layer
     src/ui/components/traffic_lights.cpp # Step 4: macOS window controls
-    src/ui/components/pill_toggle.cpp    # Step 6: the animated Apple-style switch (compiled early; the GUI draws its own pill from the same primitives until the widget library lands)
-    src/ui/gui.cpp)                  # Step 4/5: ImGui lifecycle, chrome, module cards, suppression
+    src/ui/components/pill_toggle.cpp)   # Step 6: the animated Apple-style switch
+
+# Step 6: the widget library. Every component here is portable (no windows.h), which is why the
+# host tests compile them on Linux as well as into the DLL - the widgets are the part of the
+# overlay a screenshot cannot check.
+set(WOKE_UI_WIDGET_SOURCES
+    src/ui/components/keybind_badge.cpp  # Step 6: the [KEY: X] chip + capture state machine
+    src/ui/components/module_card.cpp    # Step 6: the slate module card + drawer
+    src/ui/components/sidebar.cpp        # Step 6: navigation rows + counter badges
+    src/ui/components/search_bar.cpp     # Step 6: the fixed-buffer module filter
+    src/ui/notifications.cpp)            # Step 6: the fixed toast pool
+
+set(WOKE_UI_GUI_SOURCES
+    src/ui/gui.cpp)                  # Step 4/5/6: ImGui lifecycle, chrome, widget composition
 
 if(WIN32)
     include(JavaHeaders)
@@ -71,7 +83,7 @@ if(WIN32)
         src/hooks/game_thread.cpp)       # Step 3: frame scheduler, tick gate, perf meter
 
     add_library(woke SHARED ${WOKE_CORE_SOURCES} ${WOKE_UI_PORTABLE_SOURCES} ${WOKE_JNI_SOURCES}
-        ${WOKE_HOOK_SOURCES} ${WOKE_UI_SOURCES})
+        ${WOKE_HOOK_SOURCES} ${WOKE_UI_SOURCES} ${WOKE_UI_WIDGET_SOURCES} ${WOKE_UI_GUI_SOURCES})
     target_include_directories(woke PRIVATE src)
     target_compile_definitions(woke PRIVATE
         WIN32_LEAN_AND_MEAN NOMINMAX

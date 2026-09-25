@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold through Step 5 module system landed)
+**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold through Step 6 widget library landed)
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -14,8 +14,62 @@
 
 ---
 
+## 0. Implementation status (live)
+
+This block is the current status board; the per-step evidence table and the design notes near the
+end of this document are the historical record written while steps 3–5 were landing. Where their
+`Next gate:` lines disagree with the table below, this table is the newer statement.
+
+| Step | State |
+|---|---|
+| 0 — repo scaffold | landed |
+| 1 — core foundation | landed |
+| 2 — JVM bridge | landed |
+| 3 — hook engine | landed |
+| 4 — ImGui + macOS chrome | landed |
+| 5 — module system | landed |
+| 6 — widget library | landed |
+| 7 — visual modules | **next gate** |
+
+**Step 6 — widget library.** `ui/components/{keybind_badge,module_card,sidebar,search_bar}`,
+`ui/notifications` (fixed 8-slot toast pool), and `pill_toggle`/`traffic_lights` reworked onto the
+shared `BaseUIComponent` contract; `ui/gui.cpp` now *composes* widgets instead of drawing cards
+inline — the module list is filtered and rebuilt only on a query or registry change, there is one
+open settings drawer and one armed bind capture, a rebind/cancel toast, and the §7.8 suppression
+predicate now also stays open while a toast is on screen. The `modules` boot step refuses module
+binds while the ClickGUI is visible and reports a keybind toggle through the toast pool.
+
+Design notes worth carrying forward:
+
+- **The card is a view; the registry is the state.** `ModuleCard` never toggles itself — `interact()`
+  returns what the user did, the GUI applies it to the module, and the result is fed back through
+  `set_enabled()`. The pill is therefore a rendering of the module's state and cannot disagree with
+  it.
+- **One definition per hit target.** Every widget's `render()` and its input both derive from the
+  same sub-rect accessors (`badge_area()`, `pill_area()`, `chevron_area()`, `drawer_area()`), so the
+  drawn row and the clicked row cannot drift apart.
+- **The drawer shell is the card's; its rows are the GUI's.** `ModuleCard` owns the drawer reveal
+  (one animated value drives the chevron angle and the drawer height together) while `gui.cpp`
+  draws the setting rows, which is what keeps the card independent of the setting model and
+  testable standalone.
+- **The toast pool is the single user-visible channel.** Card toggles, keybind rebinds and
+  keybind-driven toggles all end at one `push_toast()`; a toast is recycled only after a grace
+  period off screen, and a full pool reports a drop instead of clobbering a live toast.
+- **Input ownership is enforced, not merely declared.** The GUI subscribes to `KeyEvent` one boot
+  step before the registry, so its `consumed` flag is the module dispatcher's first check and
+  `ui::visible()` suppresses module binds outright (§4.4).
+- **What is honestly still empty.** The Settings, Configs, Socials and Keybinds pages render their
+  real navigation rows and an explicit empty state; step 8 fills them, alongside the per-module
+  `KeybindSetting` persistence that replaces today's session-scoped card rebind.
+
+The six module categories already render real cards in step 6, fed by the step-5 registry
+(`Sprint State`, `Zoom Amount`), and every toggle persists to `configs/default.json`.
+
+---
+
 ## Table of Contents
 
+0. [Implementation status (live)](#0-implementation-status-live)
 1. [Repository & Native Build Setup Guide](#1-repository--native-c-build-setup-guide)
 2. [Complete Directory Tree](#2-complete-directory-tree)
 3. [Per-File Module Breakdown](#3-per-file-module-breakdown)

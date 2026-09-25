@@ -48,11 +48,14 @@ struct SpringHandle {
 
 class AnimationController {
 public:
-    // 192 states is ~16 per component over the twelve sidebar rows and the diagnostics tiles;
-    // 24 springs is more than the client will ever run at once. Exceeding either is reported by
-    // overflow_count() rather than silently dropping an animation, which would look like a
-    // widget stuck at its initial value.
-    static constexpr std::size_t kMaxStates = 192;
+    // The pool is sized for the widget library's worst case, not for a guess: a ModuleCard owns
+    // five states (its own hover and drawer reveal, the pill's t, and the badge's hover and
+    // capture pulse), so 32 cards alone are 160. The sidebar (12), the search field (2), the
+    // toast pool (8), the traffic lights (6), the window's own collapse and density (2) and the
+    // close spring's state bring the ceiling to ~190. 320 leaves real headroom, and exceeding it
+    // is still reported by overflow_count() rather than silently dropping an animation - a
+    // dropped state looks exactly like a widget stuck at its initial value.
+    static constexpr std::size_t kMaxStates = 320;
     static constexpr std::size_t kMaxSprings = 24;
 
     static constexpr float kDefaultSpeed = 14.0f;      // ~90 ms to 90 % for a hover
