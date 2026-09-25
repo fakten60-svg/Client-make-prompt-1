@@ -26,6 +26,12 @@ jmethodID g_class_loader_load_class = nullptr;
 jobject g_context_loader = nullptr;
 bool g_loader_bridge_failed = false;
 
+// java.lang.Double bridge for the boxed option values (game gamma / field of view). Owned here
+// like every other class handle and released by unbind_registry().
+jclass g_double_class = nullptr;
+jmethodID g_double_value = nullptr;   // doubleValue()D
+jmethodID g_double_value_of = nullptr; // valueOf(D)Ljava/lang/Double;
+
 void report_lookup_failure(const char* what, const util::FixedString<128>& qualified) {
     if (g_lookup_warnings < kMaxLookupWarnings) {
         ++g_lookup_warnings;
@@ -177,6 +183,48 @@ jclass load_class_with_loader(JNIEnv* env, const char* binary_name) {
         return nullptr;
     }
     return result;
+}
+
+// Resolves java.lang.Double once. A system class is reachable with a plain FindClass on a JVM
+// thread; the loader fallback covers the case where this thread attached without a context
+// loader. A failure is retried on the next call rather than cached, because the caller reports
+// it as "the write could not be made" and a later attempt may well succeed.
+bool ensure_double_bridge(JNIEnv* env) {
+    if (g_double_class != nullptr && g_double_value != nullptr && g_double_value_of != nullptr) {
+        return true;
+    }
+
+    jclass local_class = env->FindClass("java/lang/Double");
+    if (local_class == nullptr) {
+        env->ExceptionClear();
+        local_class = load_class_with_loader(env, "java/lang/Double");
+    }
+    if (local_class == nullptr) {
+        return false;
+    }
+
+    const jmethodID value = env->GetMethodID(local_class, "doubleValue", "()D");
+    const jmethodID value_of =
+        env->GetStaticMethodID(local_class, "valueOf", "(D)Ljava/lang/Double;");
+    if (env->ExceptionCheck() != JNI_FALSE) {
+        env->ExceptionClear();
+    }
+    if (value == nullptr || value_of == nullptr) {
+        env->DeleteLocalRef(local_class);
+        return false;
+    }
+
+    if (g_double_class != nullptr) {
+        env->DeleteGlobalRef(g_double_class);
+    }
+    g_double_class = static_cast<jclass>(env->NewGlobalRef(local_class));
+    env->DeleteLocalRef(local_class);
+    if (g_double_class == nullptr) {
+        return false;
+    }
+    g_double_value = value;
+    g_double_value_of = value_of;
+    return true;
 }
 
 jclass resolve_class(JNIEnv* env, ClassEntry& entry) {
@@ -339,6 +387,9 @@ void unbind_registry() noexcept {
     JNIEnv* env = current_env();
 
     if (env != nullptr) {
+        if (g_double_class != nullptr) {
+            env->DeleteGlobalRef(g_double_class);
+        }
         if (g_registry != nullptr) {
             g_registry->for_each_class([env](ClassEntry& entry) {
                 if (entry.java_class != nullptr) {
@@ -358,6 +409,9 @@ void unbind_registry() noexcept {
         }
     }
 
+    g_double_class = nullptr;
+    g_double_value = nullptr;
+    g_double_value_of = nullptr;
     g_context_loader = nullptr;
     g_class_loader_class = nullptr;
     g_thread_class = nullptr;
@@ -401,6 +455,36 @@ jclass class_of(std::string_view class_alias) noexcept {
         return nullptr;
     }
     return resolve_class(env, *entry);
+}
+
+jobject box_double(double value) noexcept {
+    JNIEnv* env = current_env();
+    if (env == nullptr || !ensure_double_bridge(env)) {
+        return nullptr;
+    }
+    jobject boxed = env->CallStaticObjectMethod(
+        g_double_class, g_double_value_of, static_cast<jdouble>(value));
+    if (env->ExceptionCheck() != JNI_FALSE) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+    return boxed;
+}
+
+bool unbox_double(jobject boxed, double& out) noexcept {
+    JNIEnv* env = current_env();
+    if (env == nullptr || boxed == nullptr || !ensure_double_bridge(env)) {
+        return false;
+    }
+    // Called on the object, not on the class: a boxed Float or Integer therefore raises here and
+    // is reported as a failed read instead of silently punned into a double.
+    const jdouble value = env->CallDoubleMethod(boxed, g_double_value);
+    if (env->ExceptionCheck() != JNI_FALSE) {
+        env->ExceptionClear();
+        return false;
+    }
+    out = static_cast<double>(value);
+    return true;
 }
 
 jmethodID method_of(std::string_view class_alias, std::string_view member) noexcept {

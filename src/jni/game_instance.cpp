@@ -22,6 +22,8 @@ constexpr const char* kInventoryClass = "class_1661";   // PlayerInventory
 constexpr const char* kWorldClass = "class_638";        // ClientWorld
 constexpr const char* kMouseClass = "class_312";        // Mouse
 constexpr const char* kVec3dClass = "class_243";        // Vec3d
+constexpr const char* kGameOptionsClass = "class_315";  // GameOptions
+constexpr const char* kSimpleOptionClass = "class_7172"; // SimpleOption
 
 struct Handles {
     jclass client_class = nullptr;
@@ -56,6 +58,13 @@ struct Handles {
 
     jmethodID mouse_get_x = nullptr;
     jmethodID mouse_get_y = nullptr;
+
+    // The option reads/writes (roadmap step 7). A SimpleOption holds its value as a boxed Object,
+    // so a write boxes a Double through reflection_cache's java.lang bridge.
+    jfieldID game_options_gamma = nullptr;
+    jfieldID game_options_fov = nullptr;
+    jmethodID simple_option_get_value = nullptr;
+    jmethodID simple_option_set_value = nullptr;
 };
 
 Handles g_handles{};
@@ -125,6 +134,11 @@ void resolve_handles() noexcept {
 
     take(g_handles.mouse_get_x, jni::method_of(kMouseClass, "getX"));
     take(g_handles.mouse_get_y, jni::method_of(kMouseClass, "getY"));
+
+    take(g_handles.game_options_gamma, jni::field_of(kGameOptionsClass, "gamma"));
+    take(g_handles.game_options_fov, jni::field_of(kGameOptionsClass, "fov"));
+    take(g_handles.simple_option_get_value, jni::method_of(kSimpleOptionClass, "getValue"));
+    take(g_handles.simple_option_set_value, jni::method_of(kSimpleOptionClass, "setValue"));
 }
 
 // True when the last call left no pending exception. A pending exception would poison every
@@ -153,6 +167,62 @@ Maybe<T> missing() noexcept {
 
 bool ready() noexcept {
     return client_ref() != nullptr && jni::current_env() != nullptr;
+}
+
+// client.options.<field> is a SimpleOption holding a boxed Double. One helper for both options
+// keeps the read and the write symmetrical, so gamma and fov cannot drift apart.
+[[nodiscard]] Maybe<float> read_option(jfieldID option_field) noexcept {
+    if (!ready() || g_handles.client_options == nullptr || option_field == nullptr
+        || g_handles.simple_option_get_value == nullptr) {
+        return missing<float>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject options = env->GetObjectField(client_ref(), g_handles.client_options);
+    if (options == nullptr) {
+        return missing<float>();
+    }
+    jobject option = env->GetObjectField(options, option_field);
+    if (option == nullptr) {
+        return missing<float>();
+    }
+
+    jobject boxed = env->CallObjectMethod(option, g_handles.simple_option_get_value);
+    if (boxed == nullptr || !no_pending_exception(env)) {
+        return missing<float>();
+    }
+
+    double value = 0.0;
+    if (!jni::unbox_double(boxed, value)) {
+        return missing<float>();
+    }
+    return Maybe<float>::of(static_cast<float>(value));
+}
+
+bool write_option(jfieldID option_field, float value) noexcept {
+    if (!ready() || g_handles.client_options == nullptr || option_field == nullptr
+        || g_handles.simple_option_set_value == nullptr) {
+        return false;
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject options = env->GetObjectField(client_ref(), g_handles.client_options);
+    if (options == nullptr) {
+        return false;
+    }
+    jobject option = env->GetObjectField(options, option_field);
+    if (option == nullptr) {
+        return false;
+    }
+
+    jobject boxed = jni::box_double(static_cast<double>(value));
+    if (boxed == nullptr) {
+        return false;
+    }
+    env->CallVoidMethod(option, g_handles.simple_option_set_value, boxed);
+    return no_pending_exception(env);
 }
 
 } // namespace
@@ -517,6 +587,22 @@ Maybe<double> mouse_y() noexcept {
         return missing<double>();
     }
     return Maybe<double>::of(static_cast<double>(y));
+}
+
+Maybe<float> gamma() noexcept {
+    return read_option(g_handles.game_options_gamma);
+}
+
+Maybe<float> fov() noexcept {
+    return read_option(g_handles.game_options_fov);
+}
+
+bool set_gamma(float value) noexcept {
+    return write_option(g_handles.game_options_gamma, value);
+}
+
+bool set_fov(float degrees) noexcept {
+    return write_option(g_handles.game_options_fov, degrees);
 }
 
 } // namespace woke::game

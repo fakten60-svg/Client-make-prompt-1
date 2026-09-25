@@ -38,6 +38,16 @@ void unbind_registry() noexcept;
     std::string_view class_alias, std::string_view member) noexcept;
 [[nodiscard]] jfieldID field_of(std::string_view class_alias, std::string_view member) noexcept;
 
+// Boxes a double into a java.lang.Double and unboxes one back. Here rather than in a caller
+// because java.lang.Double's handles are resolved by this file like every other class handle -
+// FindClass/GetMethodID stay in one translation unit (§11). The option writes (gamma, fov) are
+// the only callers: a SimpleOption's value is an Object, so a write has to supply a boxed one.
+//
+// box_double returns a local reference the caller owns; it is released with the caller's
+// ScopedLocalFrame like any other local.
+[[nodiscard]] jobject box_double(double value) noexcept;
+[[nodiscard]] bool unbox_double(jobject boxed, double& out) noexcept;
+
 struct CacheStats {
     std::size_t classes = 0;
     std::size_t methods = 0;

@@ -9,7 +9,14 @@
 #include "core/logger.h"
 #include "core/version.h"
 #include "modules/examples.h"
+#include "modules/game_writes.h"
+#include "modules/misc/clickgui.h"
 #include "modules/module_manager.h"
+#include "modules/visual/custom_crosshair.h"
+#include "modules/visual/fullbright.h"
+#include "modules/visual/hud_module.h"
+#include "modules/visual/trajectories.h"
+#include "modules/visual/zoom.h"
 #include "hooks/game_thread.h"
 #include "hooks/hook_manager.h"
 #include "hooks/swap_hook.h"
@@ -20,6 +27,7 @@
 
 #if WOKE_HAVE_JNI
 #include "jni/game_instance.h"
+#include "jni/game_writes_jni.h"
 #include "jni/jni_context.h"
 #include "jni/reflection_cache.h"
 #endif
@@ -35,8 +43,17 @@ bool g_boot_ok = false;
 
 // The module objects. Fixed at boot, owned by this translation unit, registered into the
 // process-wide manager; the config engine and the GUI reach them only through the registry.
+//
+// Registration order is display order within a category, so these are listed in the §8 catalogue's
+// order. Step 7 lands the five Visual modules and the Misc/ClickGUI entry; SprintState remains the
+// single Movement placeholder until step 8 replaces it with the real Movement set.
 woke::modules::SprintState g_sprint_module;
-woke::modules::ZoomAmount g_zoom_module;
+woke::modules::misc::ClickGUI g_clickgui_module;
+woke::modules::visual::Fullbright g_fullbright_module;
+woke::modules::visual::HudModule g_hud_module;
+woke::modules::visual::Zoom g_zoom_module;
+woke::modules::visual::Trajectories g_trajectories_module;
+woke::modules::visual::CustomCrosshair g_crosshair_module;
 
 // Module fan-out + keybind subscriptions, owned by the modules boot step (released at shutdown).
 woke::events::Subscription g_keybind_subscription{};
@@ -234,7 +251,20 @@ void dispatch_tick(events::TickEvent& event) noexcept {
 bool start_modules() noexcept {
     woke::modules::ModuleManager& registry = woke::modules::manager();
     registry.reset();
-    if (!registry.add(&g_sprint_module) || !registry.add(&g_zoom_module)) {
+
+    // Point the write seam at the real game options before the config load, so a Fullbright or
+    // Zoom that a saved config re-enables writes through the bridge on its very first tick. With
+    // the bridge compiled out the portable recorder stays installed and those modules refuse to
+    // enable, which is the honest "no game to affect" behaviour.
+#if WOKE_HAVE_JNI
+    (void)woke::modules::set_game_writes(&woke::jni::jni_game_writes());
+#endif
+
+    const bool registered = registry.add(&g_sprint_module) && registry.add(&g_clickgui_module)
+        && registry.add(&g_fullbright_module) && registry.add(&g_hud_module)
+        && registry.add(&g_zoom_module) && registry.add(&g_trajectories_module)
+        && registry.add(&g_crosshair_module);
+    if (!registered) {
         WOKE_LOG_ERROR("modules: registration failed");
         return false;
     }
@@ -426,6 +456,18 @@ void shutdown() noexcept {
     // The session's final state lands in configs/default.json before anything unsubscribes:
     // config IO runs on this (worker) thread, never in on_tick/on_render (§4.2).
     (void)save_default_config();
+
+    // Undo every module's live side effect while the bridge is still up. Fullbright and Zoom
+    // write a game option, so unloading with them enabled would otherwise leave the running game
+    // at the modified gamma or field of view. The config above already captured the enabled state,
+    // so the next injection restores it deliberately rather than by accident.
+    const std::size_t still_live = woke::modules::manager().disable_all();
+    if (still_live > 0) {
+        WOKE_LOG_INFO("modules: %zu live side effect(s) reverted before unload", still_live);
+    }
+#if WOKE_HAVE_JNI
+    (void)woke::modules::set_game_writes(nullptr);
+#endif
 
     // Module dispatch stops with the bus reset (below); the subscriptions are dropped first so
     // no tick or key can reach the registry while its modules are being torn down.

@@ -22,6 +22,9 @@
 #include "hooks/wndproc_hook.h"
 #include "modules/category.h"
 #include "modules/module_manager.h"
+#include "modules/visual/custom_crosshair.h"
+#include "modules/visual/hud_module.h"
+#include "modules/visual/trajectories.h"
 #include "ui/animation/animation_controller.h"
 #include "ui/animation/easing.h"
 #include "ui/components/keybind_badge.h"
@@ -29,6 +32,7 @@
 #include "ui/components/search_bar.h"
 #include "ui/components/sidebar.h"
 #include "ui/components/traffic_lights.h"
+#include "ui/hud.h"
 #include "ui/notifications.h"
 #include "ui/theme.h"
 #include "utils/math_utils.h"
@@ -36,6 +40,7 @@
 #include "utils/string_buffer.h"
 
 #if WOKE_HAVE_JNI
+#include "jni/game_instance.h"
 #include "jni/reflection_cache.h"
 #endif
 
@@ -526,11 +531,21 @@ void handle_density_button() noexcept {
 
 // ── Step 6: the module list, its cards and the settings drawers ────────────────
 
+// The in-world overlay's entry points, defined with the rest of that layer further down. They are
+// declared here because sync_overlay_request runs every frame and the frame scheduler's flag has
+// to include them (§7.6, §7.8).
+bool inworld_overlay_wanted() noexcept;
+void render_inworld_overlay() noexcept;
+void sync_clickgui_module() noexcept;
+
 // The overlay must also stay awake for something that is not the chrome: a toast outlives the
 // ClickGUI being hidden, and the frame scheduler's predicate reads this flag.
 void sync_overlay_request() noexcept {
-    hooks::game_thread::set_overlay_requested(
-        g_state.visible || g_state.notifications.needs_render());
+    // The ClickGUI module mirrors visibility whichever way it changed: a card click, a keybind, or
+    // the overlay's own red traffic light.
+    sync_clickgui_module();
+    hooks::game_thread::set_overlay_requested(g_state.visible || g_state.notifications.needs_render()
+        || inworld_overlay_wanted());
 }
 
 void push_toast(const char* title, const char* message, ToastIcon icon) noexcept {
@@ -1124,6 +1139,9 @@ void tick_animation(double now) noexcept {
     // reveal values: one clock, one tick (§7.4).
     g_state.notifications.animate(seconds);
     sync_overlay_request();
+    // The in-world layer draws here: inside the live frame, after the animation tick, and it
+    // yields to the ClickGUI itself so a crosshair can never land on top of the module cards.
+    render_inworld_overlay();
 }
 
 // The toasts are drawn outside the ClickGUI window on purpose: they must render on a frame where
@@ -1133,6 +1151,133 @@ void render_notifications_layer() noexcept {
     const Rect screen{0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y};
     g_state.notifications.set_screen(screen);
     g_state.notifications.render(ImGui::GetForegroundDrawList(), screen);
+}
+
+// ── In-world overlay (blueprint §7.6, roadmap step 7) ────────────────────────────
+
+using modules::visual::CustomCrosshair;
+using modules::visual::HudModule;
+using modules::visual::Trajectories;
+
+// The three overlay modules, resolved by name and re-resolved only when the registry size
+// changes. Cached because the draw path asks about them every frame, and a name lookup per frame
+// would be thirty-odd string compares for a fact that changes at most once per click.
+struct OverlayModules {
+    const HudModule* hud = nullptr;
+    const CustomCrosshair* crosshair = nullptr;
+    const Trajectories* trajectories = nullptr;
+    std::size_t resolved_count = static_cast<std::size_t>(-1);
+};
+
+OverlayModules g_overlay{};
+
+void resolve_overlay_modules() noexcept {
+    const std::size_t count = modules::manager().count();
+    if (count == g_overlay.resolved_count) {
+        return;
+    }
+    g_overlay.resolved_count = count;
+    // dynamic_cast, not static_cast: the lookup is by name, so the cast is only sound while that
+    // name still maps to the type it claims to. A future name collision becomes a null pointer - a
+    // silent overlay that does not draw - instead of undefined behaviour.
+    g_overlay.hud = dynamic_cast<const HudModule*>(modules::manager().find("HUD"));
+    g_overlay.crosshair =
+        dynamic_cast<const CustomCrosshair*>(modules::manager().find("Custom Crosshair"));
+    g_overlay.trajectories =
+        dynamic_cast<const Trajectories*>(modules::manager().find("Trajectories"));
+}
+
+// True when an enabled overlay module would draw. ui::needs_render() consults this so an enabled
+// HUD keeps the frame pipeline alive with the chrome hidden (§7.6, §7.8).
+bool inworld_overlay_wanted() noexcept {
+    resolve_overlay_modules();
+    if (g_overlay.hud != nullptr && g_overlay.hud->draws()) {
+        return true;
+    }
+    if (g_overlay.crosshair != nullptr && g_overlay.crosshair->enabled()) {
+        return true;
+    }
+    return g_overlay.trajectories != nullptr && g_overlay.trajectories->enabled();
+}
+
+// The live player view for the trajectory prediction. Read only when a path is actually going to
+// be drawn: four JNI calls per frame for a hidden overlay would be pure waste.
+void read_player_view(hud::Frame& frame) noexcept {
+#if WOKE_HAVE_JNI
+    const auto eye = game::player_eye_position();
+    const auto yaw = game::player_yaw();
+    const auto pitch = game::player_pitch();
+    const auto velocity = game::player_velocity();
+    if (!eye.valid || !yaw.valid || !pitch.valid) {
+        return;
+    }
+    frame.world_live = true;
+    frame.eye = eye.value;
+    frame.yaw_degrees = yaw.value;
+    frame.pitch_degrees = pitch.value;
+    if (velocity.valid) {
+        frame.velocity = velocity.value;
+    }
+#else
+    (void)frame;
+#endif
+}
+
+void build_hud_frame(hud::Frame& frame) noexcept {
+    resolve_overlay_modules();
+    const ImGuiIO& io = ImGui::GetIO();
+    frame.screen = Rect{0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y};
+    frame.frames_per_second = hooks::game_thread::stats().frames_per_second;
+    frame.alpha = 1.0f;
+
+    if (g_overlay.hud != nullptr && g_overlay.hud->enabled()) {
+        frame.watermark = g_overlay.hud->watermark();
+        frame.arraylist = g_overlay.hud->arraylist();
+        frame.arraylist_by_length = g_overlay.hud->sort_by_length();
+    }
+
+    if (g_overlay.crosshair != nullptr && g_overlay.crosshair->enabled()) {
+        frame.crosshair = true;
+        frame.crosshair_style.shape = g_overlay.crosshair->shape();
+        frame.crosshair_style.size = g_overlay.crosshair->size();
+        frame.crosshair_style.gap = g_overlay.crosshair->gap();
+        frame.crosshair_style.thickness = g_overlay.crosshair->thickness();
+        frame.crosshair_style.color =
+            CustomCrosshair::color_for(g_overlay.crosshair->color_index());
+    }
+
+    if (g_overlay.trajectories != nullptr && g_overlay.trajectories->enabled()) {
+        frame.trajectory = true;
+        frame.trajectory_style.params = g_overlay.trajectories->params();
+        frame.trajectory_style.color =
+            Trajectories::color_for(g_overlay.trajectories->color_index());
+        read_player_view(frame);
+    }
+}
+
+// Drawn after the chrome, so the HUD, crosshair and path sit above the game. It yields while the
+// ClickGUI is open: the chrome is the focus then, and a crosshair drawn at its centre would
+// otherwise land on top of the module cards.
+void render_inworld_overlay() noexcept {
+    if (util::clamp01(g_state.animation.value(g_state.open_spring)) > 0.001f) {
+        return;
+    }
+    hud::Frame frame{};
+    build_hud_frame(frame);
+    if (!hud::active(frame)) {
+        return;
+    }
+    hud::render(ImGui::GetForegroundDrawList(), frame);
+}
+
+// Mirrors an overlay-side visibility change (the red traffic light, focus loss) onto the ClickGUI
+// module, so its card's pill can never disagree with the window (§6, ModuleCard's invariant).
+void sync_clickgui_module() noexcept {
+    modules::BaseModule* module = modules::manager().find("ClickGUI");
+    if (module != nullptr && module->enabled() != g_state.visible) {
+        module->set_enabled(g_state.visible);
+        modules::manager().notify_changed();
+    }
 }
 
 void compose_frame() noexcept {
