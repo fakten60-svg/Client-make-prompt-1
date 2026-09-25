@@ -288,5 +288,10 @@ void test_module_system() {
         .find("\"Sprint State\"") != std::string::npos);
 
     woke::config::set_storage(nullptr); // restore the real (file) store before the local store dies
+    // Drop the stack-owned modules from the process-wide registry before they go out of scope.
+    // Every pointer the registry holds must die with this function, or a later test reading the
+    // registry (needs_render -> overlay::wanted since step 7) walks freed memory - which is
+    // exactly the host-only crash the windows CI job caught on the first step-7 run.
+    mailbox_registry.reset();
     WOKE_CHECK(true);
 }
