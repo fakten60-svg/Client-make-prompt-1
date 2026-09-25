@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "wokefabric",
+  "version": "${version}",
+  "name": "woke.wtf QoL",
+  "description": "Quality-of-life and visual utilities for Minecraft 1.21.11: fullbright, zoom, HUD, custom crosshair, trajectory preview and a clean ClickGUI. Client-side only.",
+  "authors": [
+    "woke.wtf"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/wokefabric/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "wtf.woke.WokeClientInit"
+    ]
+  },
+  "mixins": [
+    "wokefabric.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "fabric-api": "*",
+    "minecraft": "~1.21.11",
+    "java": ">=21"
+  }
+}
