@@ -11,7 +11,11 @@
 #include "modules/examples.h"
 #include "modules/game_writes.h"
 #include "modules/misc/clickgui.h"
+#include "modules/misc/config_hotkeys.h"
+#include "modules/misc/panic.h"
 #include "modules/module_manager.h"
+#include "modules/movement/auto_sprint.h"
+#include "modules/movement/velocity_display.h"
 #include "modules/visual/custom_crosshair.h"
 #include "modules/visual/fullbright.h"
 #include "modules/visual/hud_module.h"
@@ -45,10 +49,15 @@ bool g_boot_ok = false;
 // process-wide manager; the config engine and the GUI reach them only through the registry.
 //
 // Registration order is display order within a category, so these are listed in the §8 catalogue's
-// order. Step 7 lands the five Visual modules and the Misc/ClickGUI entry; SprintState remains the
-// single Movement placeholder until step 8 replaces it with the real Movement set.
+// order. Step 8 adds the Movement set (Auto Sprint, Velocity Display) and the two Misc action
+// entries (Panic, Config Hotkeys); the two step-5 example modules stay registered because the
+// config and GUI test fixtures are built on them.
 woke::modules::SprintState g_sprint_module;
+woke::modules::movement::AutoSprint g_auto_sprint_module;
+woke::modules::movement::VelocityDisplay g_velocity_display_module;
 woke::modules::misc::ClickGUI g_clickgui_module;
+woke::modules::misc::Panic g_panic_module;
+woke::modules::misc::ConfigHotkeys g_config_hotkeys_module;
 woke::modules::visual::Fullbright g_fullbright_module;
 woke::modules::visual::HudModule g_hud_module;
 woke::modules::visual::Zoom g_zoom_module;
@@ -221,23 +230,35 @@ bool start_ui_window() noexcept {
 // has had its chance to consume the key. The GUI subscribes first (it is a boot step ahead), so
 // `consumed` here means "the ClickGUI already took this key" - either because it is the toggle
 // bind or because a keybind chip is capturing - and the module binds must not also act on it.
-// Press-mode only for now; hold-mode arrives with the movement modules in step 8.
+//
+// Both edges are forwarded since step 8: a press-only dispatcher cannot express a hold bind
+// (ClickGUI's hold mode, a future paddle), and a *released* key is exactly the event a hold bind
+// needs most. Only key-*down* is GUI-suppressed (§4.4), so a bind held while the overlay opens
+// still receives its release instead of sticking on.
 void dispatch_module_keybind(events::KeyEvent& event) {
-    if (!event.down || event.repeat || event.consumed) {
+    if (event.consumed) {
         return;
     }
-    // GUI-open suppression (§4.4). Typing in the search field or clicking through the cards must
-    // not toggle modules behind the overlay. The ClickGUI's own toggle bind is structurally
-    // exempt: it is handled by the GUI's handler above, never by a module bind.
-    if (ui::visible()) {
-        return;
+    if (event.down) {
+        if (event.repeat) {
+            return;
+        }
+        // GUI-open suppression (§4.4). Typing in the search field or clicking through the cards
+        // must not toggle modules behind the overlay. The ClickGUI's own toggle bind is
+        // structurally exempt: it is handled by the GUI's handler above, never by a module bind.
+        if (ui::visible()) {
+            return;
+        }
     }
     if (modules::manager().handle_key(event.virtual_key, event.down)) {
         event.consumed = true;
         // §4.4: a module state change is always user-visible. The dispatcher reports the key that
         // was pressed and the overlay - which owns the toast pool - resolves the module names, so
-        // the wording stays in one layer.
-        ui::notify_keybind_toggle(event.virtual_key);
+        // the wording stays in one layer. Action modules are filtered out by has_toggle_bind():
+        // their key does something rather than flipping a state, so there is nothing to announce.
+        if (event.down && modules::manager().has_toggle_bind(event.virtual_key)) {
+            ui::notify_keybind_toggle(event.virtual_key);
+        }
     }
 }
 
@@ -245,6 +266,15 @@ void dispatch_module_keybind(events::KeyEvent& event) {
 // Rendering fan-out (on_render) is a no-op for the two step-5 example modules, but the plumbing
 // is live so step 7's visual modules do not need to touch the scheduler.
 void dispatch_tick(events::TickEvent& event) noexcept {
+    // A profile load a hotkey requested lands here, on the game thread at a frame boundary, rather
+    // than inside key dispatch: applying a config flips module enable state, and mutating the
+    // registry while the key fan-out is walking it is the ordering bug the load mailbox removes.
+    config::LoadReport applied;
+    if (config::service_loads(applied)) {
+        WOKE_LOG_INFO(
+            "modules: profile loaded (%zu module(s) matched, %zu value(s) applied, %zu unknown)",
+            applied.modules_matched, applied.settings_applied, applied.unknown_modules);
+    }
     modules::manager().on_tick(event.delta_seconds);
 }
 
@@ -260,7 +290,9 @@ bool start_modules() noexcept {
     (void)woke::modules::set_game_writes(&woke::jni::jni_game_writes());
 #endif
 
-    const bool registered = registry.add(&g_sprint_module) && registry.add(&g_clickgui_module)
+    const bool registered = registry.add(&g_sprint_module) && registry.add(&g_auto_sprint_module)
+        && registry.add(&g_velocity_display_module) && registry.add(&g_clickgui_module)
+        && registry.add(&g_panic_module) && registry.add(&g_config_hotkeys_module)
         && registry.add(&g_fullbright_module) && registry.add(&g_hud_module)
         && registry.add(&g_zoom_module) && registry.add(&g_trajectories_module)
         && registry.add(&g_crosshair_module);

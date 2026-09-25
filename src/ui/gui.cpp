@@ -22,6 +22,7 @@
 #include "hooks/wndproc_hook.h"
 #include "modules/category.h"
 #include "modules/module_manager.h"
+#include "modules/movement/velocity_display.h"
 #include "modules/visual/custom_crosshair.h"
 #include "modules/visual/hud_module.h"
 #include "modules/visual/trajectories.h"
@@ -740,6 +741,22 @@ void handle_module_cards(const Rect& pane, float alpha) noexcept {
     }
 }
 
+// Arms the card's keybind capture for a module. Exactly one capture exists at a time and the card's
+// badge owns the state machine, so a rebind started from a drawer row and one started from the
+// chip are the same code path - which is what keeps the two affordances from disagreeing about the
+// current bind. The write itself goes through BaseModule::set_bind(), whose value is a persisted
+// BindSetting, so a rebind from either place survives the session.
+void arm_bind_capture(modules::BaseModule* module) noexcept {
+    const modules::ModuleManager& registry = modules::manager();
+    for (std::size_t index = 0; index < registry.count(); ++index) {
+        if (registry.at(index) == module) {
+            g_state.capture_index = static_cast<int>(index);
+            WOKE_LOG_DEBUG("keybind: capturing a new bind for '%s'", module->name());
+            return;
+        }
+    }
+}
+
 // The one place a setting is edited from the overlay. Clicking a bool flips it, clicking an enum
 // cycles it, and a slider follows the pointer for as long as the button is held - including after
 // the pointer leaves the row, because "you must keep the cursor inside" is the classic way for a
@@ -777,6 +794,15 @@ void handle_settings_rows() noexcept {
                     g_state.slider_drag = nullptr;
                     (void)save_config();
                 }
+            }
+            continue;
+        }
+
+        // A bind row arms capture rather than editing in place: the value is "the next key you
+        // press", and the key has to arrive through the window procedure.
+        if (setting->kind() == settings::Kind::Bind) {
+            if (hovered && input.is_pressed(0)) {
+                arm_bind_capture(module);
             }
             continue;
         }
@@ -841,14 +867,23 @@ void draw_settings_rows(ImDrawList* draw_list, float alpha) noexcept {
         case settings::Kind::Enum:
             value.assign(setting->enum_label());
             break;
+        case settings::Kind::Bind: {
+            // The same key-name table the card's chip uses, so a bind reads identically in both
+            // places (§3.6: one vocabulary for "which key is this").
+            char key_label[16];
+            components::format_key(setting->bind_value(), key_label, sizeof(key_label));
+            value.assign(key_label);
+            break;
+        }
         default:
             break;
         }
 
-        const Rgba value_color =
-            (setting->kind() == settings::Kind::Bool && setting->bool_value())
-            ? theme::color::kAccent
-            : theme::color::kText;
+        // An armed bind and a lit bool share the accent treatment: both mean "this is set" rather
+        // than "this is at its default".
+        const bool is_live = (setting->kind() == settings::Kind::Bool && setting->bool_value())
+            || (setting->kind() == settings::Kind::Bind && setting->bind_value() != 0);
+        const Rgba value_color = is_live ? theme::color::kAccent : theme::color::kText;
         draw::text_clipped(draw_list,
             Rect{rect.right() - kSettingValueColumn, rect.top(), kSettingValueColumn - 8.0f,
                 rect.h},
@@ -1157,15 +1192,17 @@ void render_notifications_layer() noexcept {
 
 using modules::visual::CustomCrosshair;
 using modules::visual::HudModule;
+using modules::movement::VelocityDisplay;
 using modules::visual::Trajectories;
 
-// The three overlay modules, resolved by name and re-resolved only when the registry size
+// The in-world overlay modules, resolved by name and re-resolved only when the registry size
 // changes. Cached because the draw path asks about them every frame, and a name lookup per frame
 // would be thirty-odd string compares for a fact that changes at most once per click.
 struct OverlayModules {
     const HudModule* hud = nullptr;
     const CustomCrosshair* crosshair = nullptr;
     const Trajectories* trajectories = nullptr;
+    const VelocityDisplay* velocity = nullptr;
     std::size_t resolved_count = static_cast<std::size_t>(-1);
 };
 
@@ -1185,6 +1222,8 @@ void resolve_overlay_modules() noexcept {
         dynamic_cast<const CustomCrosshair*>(modules::manager().find("Custom Crosshair"));
     g_overlay.trajectories =
         dynamic_cast<const Trajectories*>(modules::manager().find("Trajectories"));
+    g_overlay.velocity =
+        dynamic_cast<const VelocityDisplay*>(modules::manager().find("Velocity Display"));
 }
 
 // True when an enabled overlay module would draw. ui::needs_render() consults this so an enabled
@@ -1195,6 +1234,9 @@ bool inworld_overlay_wanted() noexcept {
         return true;
     }
     if (g_overlay.crosshair != nullptr && g_overlay.crosshair->enabled()) {
+        return true;
+    }
+    if (g_overlay.velocity != nullptr && g_overlay.velocity->enabled()) {
         return true;
     }
     return g_overlay.trajectories != nullptr && g_overlay.trajectories->enabled();
@@ -1244,6 +1286,12 @@ void build_hud_frame(hud::Frame& frame) noexcept {
         frame.crosshair_style.thickness = g_overlay.crosshair->thickness();
         frame.crosshair_style.color =
             CustomCrosshair::color_for(g_overlay.crosshair->color_index());
+    }
+
+    if (g_overlay.velocity != nullptr && g_overlay.velocity->enabled()) {
+        frame.velocity_chip = true;
+        frame.velocity_units = g_overlay.velocity->units_index();
+        read_player_view(frame);
     }
 
     if (g_overlay.trajectories != nullptr && g_overlay.trajectories->enabled()) {

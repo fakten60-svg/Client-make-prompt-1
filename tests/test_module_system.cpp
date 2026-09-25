@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "core/config.h"
 #include "modules/examples.h"
 #include "modules/module_manager.h"
@@ -85,12 +87,17 @@ void test_module_system() {
     WOKE_CHECK(manager.category_total(Category::Combat) == 0);
     WOKE_CHECK(manager.category_enabled(Category::Movement) == 0);
 
-    // Setting metadata walked through the erased view.
-    WOKE_CHECK(sprint.setting_count() == 1);
-    WOKE_CHECK(zoom.setting_count() == 2);
+    // Setting metadata walked through the erased view. The module's own toggle bind is registered
+    // as its last setting (step 8), which is what makes a rebind persist with no bespoke code.
+    WOKE_CHECK(sprint.setting_count() == 2);
+    WOKE_CHECK(zoom.setting_count() == 3);
     WOKE_CHECK_STR(zoom.settings()[0]->name(), "factor");
     WOKE_CHECK_STR(zoom.settings()[1]->name(), "curve");
     WOKE_CHECK(zoom.settings()[0]->kind() == woke::settings::Kind::Slider);
+    WOKE_CHECK_STR(zoom.settings()[2]->name(), "bind");
+    WOKE_CHECK(zoom.settings()[2]->kind() == woke::settings::Kind::Bind);
+    WOKE_CHECK(zoom.settings()[2]->bind_value() == 0x43); // the module's default bind, erased
+    WOKE_CHECK(sprint.settings()[1]->bind_value() == 0);  // an unbound module reads as 0
 
     // Toggle + fan-out.
     bool ticked = false;
@@ -173,9 +180,10 @@ void test_module_system() {
     WOKE_CHECK(!sprint.dirty());
     WOKE_CHECK(zoom.settings()[0]->dirty());
     WOKE_CHECK(zoom.settings()[1]->dirty());
-    for (std::size_t index = 0; index < zoom.setting_count(); ++index) {
-        WOKE_CHECK(zoom.settings()[index]->dirty());
-    }
+    WOKE_CHECK(zoom.settings()[0]->dirty());
+    WOKE_CHECK(zoom.settings()[1]->dirty());
+    // The bind was not touched, so it is clean - the whole point of tracking per-setting dirt.
+    WOKE_CHECK(!zoom.settings()[2]->dirty());
     zoom.clear_dirty();
     WOKE_CHECK(!zoom.dirty());
 
@@ -203,10 +211,10 @@ void test_module_system() {
     const LoadReport loaded = woke::config::load("default");
     WOKE_CHECK(loaded.parsed);
     WOKE_CHECK(loaded.modules_matched == 2);
-    // Applied = values that actually changed: sprint's enabled flag and bool, the factor, the
-    // curve. (Zoom's enabled=false matches its default, so setting it is a no-op that does not
-    // count - the "only real changes" rule.)
-    WOKE_CHECK(loaded.settings_applied == 4);
+    // Applied = every value the document carried and the setting accepted: sprint's enabled flag,
+    // its bool and its bind, and zoom's factor, curve and bind. (Zoom's enabled=false reaches
+    // set_enabled(), which reports "no state change" and is therefore the one entry not counted.)
+    WOKE_CHECK(loaded.settings_applied == 6);
     WOKE_CHECK(loaded.unknown_modules == 0);
     WOKE_CHECK(loaded.unknown_settings == 0);
     WOKE_CHECK(loaded.wrong_type == 0);
@@ -214,12 +222,34 @@ void test_module_system() {
     WOKE_CHECK(sprint2.enabled());                  // toggles persisted across reinjection
     WOKE_CHECK(util_nearly(zoom2.settings()[0]->float_value(), 4.5f));
     WOKE_CHECK(zoom2.settings()[1]->enum_index() == 2);
+    WOKE_CHECK(zoom2.bind() == 0x43); // the bind survived the same round trip
 
     // A second save with unchanged state reproduces the same document (nlohmann's object dumps
     // sort keys, so the order is deterministic).
     WOKE_CHECK(woke::config::save("default"));
     WOKE_CHECK(storage.writes_ == 2);
     WOKE_CHECK(storage.files_[woke::config::path_for("default")] == saved);
+
+    // ── Step 8: the bind is an ordinary setting ─────────────────────────────────
+    woke_test::section("bind setting");
+
+    // Setting the bind is a setting change, so it marks dirty and lands in the serialized document
+    // like any other value. That is what makes the Keybinds page a *view* of the config rather than
+    // a second place binds live.
+    zoom2.set_bind(0x51); // 'Q'
+    WOKE_CHECK(zoom2.bind() == 0x51);
+    WOKE_CHECK(zoom2.settings()[2]->dirty());
+    WOKE_CHECK(woke::config::serialize().find("\"bind\": 81") != std::string::npos);
+
+    // Tolerance, the same rules the other kinds follow: a wrong-typed value is refused (and the
+    // bind is untouched), a negative code clamps to "unbound" rather than corrupting the value.
+    WOKE_CHECK(!zoom2.settings()[2]->from_json(nlohmann::json("not a key")));
+    WOKE_CHECK(zoom2.bind() == 0x51);
+    WOKE_CHECK(zoom2.settings()[2]->from_json(nlohmann::json(-5)));
+    WOKE_CHECK(zoom2.bind() == 0);
+    WOKE_CHECK(zoom2.settings()[2]->from_json(nlohmann::json(0x43)));
+    WOKE_CHECK(zoom2.bind() == 0x43);
+    zoom2.clear_dirty();
 
     // ── Tolerance contract (§4.2) ───────────────────────────────────────────────
     woke_test::section("config tolerance");

@@ -62,6 +62,18 @@ void request_save(const char* name) noexcept;
 // Services one pending save request. Called from the worker loop; returns true when a save ran.
 [[nodiscard]] bool service_saves() noexcept;
 
+// Requests a load of the named config (roadmap step 8: the profile hotkeys). Loading flips module
+// enable state, so unlike a save it cannot be serviced on the worker thread - it would mutate the
+// registry while the game thread's key fan-out was walking it. The request is parked in a second
+// mailbox with the same coalescing rule and serviced by service_loads(), which the tick gate calls
+// on the game thread: applying a profile is therefore deferred to a frame boundary, never run
+// inside key dispatch. `name` must be a short literal (fixed 64-byte mailbox).
+void request_load(const char* name) noexcept;
+
+// Applies one pending load request, filling `out` with the report for the caller to log. Returns
+// false when nothing was pending.
+[[nodiscard]] bool service_loads(LoadReport& out) noexcept;
+
 // Loads configs/<name>.json into the live modules. A missing file keeps defaults and reports
 // parsed = false with no applied settings - the first boot case, not an error.
 [[nodiscard]] LoadReport load(std::string_view name) noexcept;

@@ -96,6 +96,28 @@ constexpr std::size_t kSaveNameCapacity = 64;
 std::atomic<bool> g_save_pending{false};
 char g_save_name[kSaveNameCapacity] = {};
 
+// The deferred-load mailbox (step 8). Same shape as the save one and for the same reason, but
+// serviced on the game thread: a load mutates module state, so it must not run concurrently with
+// the tick/key fan-out. Only the *when* differs, not the coalescing rule.
+std::atomic<bool> g_load_pending{false};
+char g_load_name[kSaveNameCapacity] = {};
+
+// Truncating copy into a fixed mailbox: names come from call-site literals, so a clipped name is a
+// visible bug (wrong file) rather than a crash.
+void park_name(char (&mailbox)[kSaveNameCapacity], const char* name) noexcept {
+    if (name == nullptr) {
+        mailbox[0] = '\0';
+        return;
+    }
+    for (std::size_t index = 0; index < kSaveNameCapacity - 1; ++index) {
+        mailbox[index] = name[index];
+        if (name[index] == '\0') {
+            break;
+        }
+    }
+    mailbox[kSaveNameCapacity - 1] = '\0';
+}
+
 Storage& store() noexcept {
     static FileStorage default_store;
     return g_storage != nullptr ? *g_storage : default_store;
@@ -220,15 +242,7 @@ void request_save(const char* name) noexcept {
     if (name == nullptr) {
         return;
     }
-    // Truncating copy into the fixed mailbox: names come from call-site literals, so 64 bytes
-    // is generous, and a clipped name is a visible bug (wrong file) rather than a crash.
-    for (std::size_t index = 0; index < kSaveNameCapacity - 1; ++index) {
-        g_save_name[index] = name[index];
-        if (name[index] == '\0') {
-            break;
-        }
-    }
-    g_save_name[kSaveNameCapacity - 1] = '\0';
+    park_name(g_save_name, name);
     g_save_pending.store(true, std::memory_order_release);
 }
 
@@ -242,6 +256,23 @@ bool service_saves() noexcept {
     // value, and a false write is reported there - the same warnings-as-strings discipline the
     // mappings registry uses.
     return save(g_save_name);
+}
+
+void request_load(const char* name) noexcept {
+    if (name == nullptr) {
+        return;
+    }
+    park_name(g_load_name, name);
+    g_load_pending.store(true, std::memory_order_release);
+}
+
+bool service_loads(LoadReport& out) noexcept {
+    const bool pending = g_load_pending.exchange(false, std::memory_order_acq_rel);
+    if (!pending) {
+        return false;
+    }
+    out = load(g_load_name);
+    return true;
 }
 
 bool save(std::string_view name) noexcept {

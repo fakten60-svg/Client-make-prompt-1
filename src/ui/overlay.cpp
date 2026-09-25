@@ -1,6 +1,7 @@
 #include "ui/overlay.h"
 
 #include "modules/module_manager.h"
+#include "modules/movement/velocity_display.h"
 #include "modules/visual/custom_crosshair.h"
 #include "modules/visual/hud_module.h"
 #include "modules/visual/trajectories.h"
@@ -13,6 +14,7 @@ namespace {
 constexpr const char* kHudName = "HUD";
 constexpr const char* kCrosshairName = "Custom Crosshair";
 constexpr const char* kTrajectoriesName = "Trajectories";
+constexpr const char* kVelocityName = "Velocity Display";
 
 } // namespace
 
@@ -29,6 +31,11 @@ bool wanted() noexcept {
     if (const auto* crosshair =
             dynamic_cast<const modules::visual::CustomCrosshair*>(registry.find(kCrosshairName));
         crosshair != nullptr && crosshair->enabled()) {
+        return true;
+    }
+    if (const auto* velocity =
+            dynamic_cast<const modules::movement::VelocityDisplay*>(registry.find(kVelocityName));
+        velocity != nullptr && velocity->enabled()) {
         return true;
     }
     const auto* trajectories =

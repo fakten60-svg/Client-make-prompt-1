@@ -44,9 +44,15 @@ public:
     // Panic (§8): disables every module. Returns how many were live.
     [[nodiscard]] std::size_t disable_all() noexcept;
 
-    // Keybind routing (§4.4). Returns true when a bind consumed the key. Press-mode only for
-    // step 5; hold-mode arrives with the movement modules in step 8.
+    // Keybind routing (§4.4, extended in step 8). Both edges are forwarded to every module's
+    // on_key, so hold-mode and action modules work through the same single path the press-toggle
+    // default uses. Returns true when any module claimed the key.
     [[nodiscard]] bool handle_key(int virtual_key, bool down) noexcept;
+
+    // True when some *toggle* module is bound to this key, i.e. when the keypress changed a state
+    // worth reporting. Action modules are excluded: their key does something rather than flipping a
+    // state, so the toast layer must not announce a module that was never on.
+    [[nodiscard]] bool has_toggle_bind(int virtual_key) const noexcept;
 
     // Per-tick and per-frame fan-out over enabled modules only.
     void on_tick(float delta_seconds) noexcept;

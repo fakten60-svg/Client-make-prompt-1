@@ -26,6 +26,7 @@ enum class Kind : std::uint8_t {
     Bool = 0,
     Slider,
     Enum,
+    Bind,
 };
 
 [[nodiscard]] constexpr const char* kind_label(Kind kind) noexcept {
@@ -36,6 +37,8 @@ enum class Kind : std::uint8_t {
         return "slider";
     case Kind::Enum:
         return "enum";
+    case Kind::Bind:
+        return "bind";
     default:
         return "?";
     }
@@ -69,6 +72,11 @@ public:
 
     [[nodiscard]] std::size_t enum_index() const noexcept {
         return kind_ == Kind::Enum ? storage_.enum_.index : 0;
+    }
+
+    // A virtual-key code (0 = unbound). Reads as 0 on a wrong-kind setting, like the others.
+    [[nodiscard]] int bind_value() const noexcept {
+        return kind_ == Kind::Bind ? storage_.bind_.value : 0;
     }
 
     [[nodiscard]] std::string_view enum_label() const noexcept {
@@ -130,6 +138,18 @@ public:
         dirty_ = true;
     }
 
+    void set_bind_value(int virtual_key) noexcept {
+        if (kind_ != Kind::Bind) {
+            return;
+        }
+        const int clamped = virtual_key < 0 ? 0 : virtual_key;
+        if (storage_.bind_.value == clamped) {
+            return;
+        }
+        storage_.bind_.value = clamped;
+        dirty_ = true;
+    }
+
     // ── JSON round trip. to_json writes the live value; from_json applies a value only when it is
     // present *and* of the right kind, which is §4.2's tolerance contract.
 
@@ -145,6 +165,9 @@ public:
                 break;
             case Kind::Enum:
                 out = std::string_view(storage_.enum_.labels[storage_.enum_.index]);
+                break;
+            case Kind::Bind:
+                out = storage_.bind_.value;
                 break;
             default:
                 break;
@@ -181,6 +204,12 @@ public:
                     }
                 }
                 return false;
+            case Kind::Bind:
+                if (value.is_number_integer()) {
+                    set_bind_value(value.get<int>());
+                    return true;
+                }
+                return false;
             default:
                 return false;
             }
@@ -207,6 +236,10 @@ protected:
         std::size_t index;
     };
 
+    struct BindInit {
+        int value;
+    };
+
     explicit Setting(const char* name, const char* description, BoolInit init) noexcept
         : name_(name), description_(description), kind_(Kind::Bool), storage_{.bool_ = init} {}
 
@@ -216,6 +249,9 @@ protected:
     explicit Setting(const char* name, const char* description, EnumInit init) noexcept
         : name_(name), description_(description), kind_(Kind::Enum), storage_{.enum_ = init} {}
 
+    explicit Setting(const char* name, const char* description, BindInit init) noexcept
+        : name_(name), description_(description), kind_(Kind::Bind), storage_{.bind_ = init} {}
+
     ~Setting() = default;
 
 protected:
@@ -223,6 +259,7 @@ protected:
         BoolInit bool_;
         SliderInit slider_;
         EnumInit enum_;
+        BindInit bind_;
     };
 
     const char* name_ = nullptr;
@@ -266,6 +303,19 @@ public:
 
     [[nodiscard]] std::size_t count() const noexcept { return storage_.enum_.count; }
     [[nodiscard]] std::string_view value() const noexcept { return enum_label(); }
+};
+
+// A keybinding as a setting: the value is a Windows virtual-key code, 0 = unbound. This is what
+// makes a rebind persist (roadmap step 8): BaseModule registers its own toggle key as one of
+// these, so the config engine walks it like any other setting and the Keybinds page lands with
+// zero extra persistence code. Action modules (Panic, Config Hotkeys) carry several of them.
+class BindSetting final : public Setting {
+public:
+    BindSetting(const char* name, const char* description, int default_key = 0) noexcept
+        : Setting(name, description, BindInit{default_key < 0 ? 0 : default_key}) {}
+
+    [[nodiscard]] int value() const noexcept { return bind_value(); }
+    void set(int virtual_key) noexcept { set_bind_value(virtual_key); }
 };
 
 } // namespace woke::settings

@@ -72,6 +72,36 @@ void RecordingGameWrites::restore_fov() noexcept {
     ++restores_;
 }
 
+game::Maybe<bool> RecordingGameWrites::sprint_key_pressed() noexcept {
+    if (!available_) {
+        return game::Maybe<bool>::missing();
+    }
+    return game::Maybe<bool>::of(sprint_pressed_);
+}
+
+bool RecordingGameWrites::apply_sprint(bool pressed) noexcept {
+    if (!available_) {
+        return false;
+    }
+    if (!sprint_captured_) {
+        baseline_sprint_ = sprint_pressed_;
+        sprint_captured_ = true;
+    }
+    sprint_active_ = true;
+    sprint_pressed_ = pressed;
+    ++sprint_applies_;
+    return true;
+}
+
+void RecordingGameWrites::restore_sprint() noexcept {
+    if (!sprint_active_) {
+        return;
+    }
+    sprint_pressed_ = baseline_sprint_;
+    sprint_active_ = false;
+    ++restores_;
+}
+
 void RecordingGameWrites::seed(float gamma_value, float fov_value) noexcept {
     gamma_value_ = gamma_value;
     fov_value_ = fov_value;
@@ -79,6 +109,14 @@ void RecordingGameWrites::seed(float gamma_value, float fov_value) noexcept {
     fov_captured_ = false;
     gamma_active_ = false;
     fov_active_ = false;
+    sprint_captured_ = false;
+    sprint_active_ = false;
+}
+
+void RecordingGameWrites::seed_sprint(bool pressed) noexcept {
+    sprint_pressed_ = pressed;
+    sprint_captured_ = false;
+    sprint_active_ = false;
 }
 
 GameWrites* set_game_writes(GameWrites* writes) noexcept {
