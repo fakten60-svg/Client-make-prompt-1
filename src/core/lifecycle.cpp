@@ -201,14 +201,26 @@ bool start_ui_window() noexcept {
 // ── Step 5: the module system ──────────────────────────────────────────────
 
 // Keybind dispatch (§4.4): the WndProc's KeyEvent stream feeds the module manager after the GUI
-// has had its chance to consume the key. Press-mode only in step 5; hold-mode arrives with the
-// movement modules in step 8.
+// has had its chance to consume the key. The GUI subscribes first (it is a boot step ahead), so
+// `consumed` here means "the ClickGUI already took this key" - either because it is the toggle
+// bind or because a keybind chip is capturing - and the module binds must not also act on it.
+// Press-mode only for now; hold-mode arrives with the movement modules in step 8.
 void dispatch_module_keybind(events::KeyEvent& event) {
-    if (!event.down || event.repeat) {
+    if (!event.down || event.repeat || event.consumed) {
+        return;
+    }
+    // GUI-open suppression (§4.4). Typing in the search field or clicking through the cards must
+    // not toggle modules behind the overlay. The ClickGUI's own toggle bind is structurally
+    // exempt: it is handled by the GUI's handler above, never by a module bind.
+    if (ui::visible()) {
         return;
     }
     if (modules::manager().handle_key(event.virtual_key, event.down)) {
         event.consumed = true;
+        // §4.4: a module state change is always user-visible. The dispatcher reports the key that
+        // was pressed and the overlay - which owns the toast pool - resolves the module names, so
+        // the wording stays in one layer.
+        ui::notify_keybind_toggle(event.virtual_key);
     }
 }
 

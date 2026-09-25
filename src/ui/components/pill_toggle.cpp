@@ -35,6 +35,10 @@ void PillToggle::set_value(bool on) noexcept {
     target_on_ = on;
 }
 
+void PillToggle::set_alpha(float alpha) noexcept {
+    alpha_ = util::clamp01(alpha);
+}
+
 bool PillToggle::handle_input(const Input& input) noexcept {
     if (area_.empty()) {
         return false;
@@ -65,14 +69,14 @@ void PillToggle::render(ImDrawList* draw_list, const Rect& area) noexcept {
     const Rgba on_color = theme::color::kAccent;
     const Rgba background = util::mix(off_color, on_color, t);
 
-    draw::rounded_rect(draw_list, area, background, area.h * 0.5f);
+    draw::rounded_rect(draw_list, area, util::with_alpha(background, alpha_), area.h * 0.5f);
 
     const float knob_radius = theme::metrics::kKnobRadius;
     const float knob_y = area.center_y();
     const float knob_x =
         util::lerp(area.left() + knob_radius + kKnobInset, area.right() - knob_radius - kKnobInset,
             t);
-    draw::circle(draw_list, knob_x, knob_y, knob_radius, util::kWhite);
+    draw::circle(draw_list, knob_x, knob_y, knob_radius, util::with_alpha(util::kWhite, alpha_));
 }
 
 bool PillToggle::take_click() noexcept {

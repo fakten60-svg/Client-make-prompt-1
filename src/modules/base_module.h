@@ -34,9 +34,11 @@ public:
     [[nodiscard]] const char* description() const noexcept { return description_; }
     [[nodiscard]] Category category() const noexcept { return category_; }
     [[nodiscard]] bool enabled() const noexcept { return enabled_; }
-    // Bind that toggles this module (0 = unbound). Fixed for step 5; a rebindable KeybindSetting
-    // replaces this in step 6.
+    // Bind that toggles this module (0 = unbound). Step 6 makes it rebindable through the keybind
+    // chip's capture mode; persisting the bind alongside the module's settings lands with the
+    // Keybinds page in step 8, so a rebind is currently session-scoped.
     [[nodiscard]] int bind() const noexcept { return bind_; }
+    void set_bind(int virtual_key) noexcept { bind_ = virtual_key < 0 ? 0 : virtual_key; }
 
     // The module's settings, in declaration order. Erased on purpose: the config engine and the
     // GUI need "walk the settings", not the array's size at compile time. register_settings()

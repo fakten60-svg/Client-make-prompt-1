@@ -85,6 +85,20 @@ public:
         return storage_.enum_.labels[index];
     }
 
+    // Bounds and option count, so a widget can render a slider or cycle an enum through the
+    // erased view alone - no downcast, and a wrong-kind read is still the zero value.
+    [[nodiscard]] std::size_t enum_count() const noexcept {
+        return kind_ == Kind::Enum ? storage_.enum_.count : 0;
+    }
+
+    [[nodiscard]] float float_minimum() const noexcept {
+        return kind_ == Kind::Slider ? storage_.slider_.minimum : 0.0f;
+    }
+
+    [[nodiscard]] float float_maximum() const noexcept {
+        return kind_ == Kind::Slider ? storage_.slider_.maximum : 0.0f;
+    }
+
     // ── Mutation paths. Every one sets the dirty flag, and only on an actual change, so the
     // config engine never rewrites the file for a no-op (§4.4's persist-dirty flag).
 
