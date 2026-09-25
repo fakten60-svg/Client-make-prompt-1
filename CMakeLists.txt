@@ -35,7 +35,8 @@ set(WOKE_CORE_SOURCES
     src/jni/mappings.cpp             # Step 2: mappings.json registry (portable)
     src/core/event_bus.cpp           # Step 3: fixed-slot pub/sub (portable)
     src/core/config.cpp              # Step 5: settings persistence over nlohmann (portable)
-    src/modules/module_manager.cpp)  # Step 5: module registry, buckets, keybind routing
+    src/modules/module_manager.cpp   # Step 5: module registry, buckets, keybind routing
+    src/modules/game_writes.cpp)     # Step 7: the recording client-write backend (portable)
 
 # Step 4 builds on the portable half of the UI too: the curves, the animation engine and the theme
 # tokens carry no Windows dependency, so they are compiled by the host tests on Linux as well.
@@ -46,7 +47,9 @@ set(WOKE_UI_PORTABLE_SOURCES
 set(WOKE_UI_SOURCES
     src/utils/render_utils.cpp       # Step 4: the only ImDrawList primitive layer
     src/ui/components/traffic_lights.cpp # Step 4: macOS window controls
-    src/ui/components/pill_toggle.cpp)   # Step 6: the animated Apple-style switch
+    src/ui/components/pill_toggle.cpp    # Step 6: the animated Apple-style switch
+    src/ui/hud.cpp                       # Step 7: the in-world overlay renderer (portable)
+    src/ui/overlay.cpp)                  # Step 7: the overlay policy predicate (portable)
 
 # Step 6: the widget library. Every component here is portable (no windows.h), which is why the
 # host tests compile them on Linux as well as into the DLL - the widgets are the part of the
@@ -71,7 +74,8 @@ if(WIN32)
         list(APPEND WOKE_JNI_SOURCES
             src/jni/jni_context.cpp      # Step 2: VM discovery + per-thread attach
             src/jni/reflection_cache.cpp # Step 2: cached jclass/jmethodID/jfieldID lookups
-            src/jni/game_instance.cpp)   # Step 2: the only game-state façade
+            src/jni/game_instance.cpp    # Step 2: the only game-state façade
+            src/jni/game_writes_jni.cpp) # Step 7: the JNI-backed gamma/fov write backend
     endif()
 
     # Step 3: the hook engine. Windows-only, but independent of the JNI bridge - the hooks

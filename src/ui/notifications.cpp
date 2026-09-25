@@ -1,6 +1,7 @@
 #include "ui/notifications.h"
 
 #include "ui/animation/easing.h"
+#include "ui/overlay.h"
 #include "ui/theme.h"
 #include "utils/math_utils.h"
 
@@ -234,7 +235,11 @@ bool Notifications::needs_render() const noexcept {
             return true;
         }
     }
-    return false;
+    // The pool is the single place ui::needs_render consults for "something outside the chrome
+    // needs a frame" (§7.8), and the in-world overlay is exactly that: an enabled HUD, crosshair
+    // or trajectory prediction must keep the pipeline alive while the ClickGUI is hidden. Read
+    // live rather than cached, so the very first frame after a toggle is not suppressed.
+    return overlay::wanted();
 }
 
 std::size_t Notifications::active_count() const noexcept {

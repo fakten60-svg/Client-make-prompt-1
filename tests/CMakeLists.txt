@@ -15,6 +15,7 @@ add_executable(woke_tests
     test_ui_draw.cpp
     test_module_system.cpp
     test_widgets.cpp
+    test_visual_modules.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp
@@ -29,7 +30,10 @@ add_executable(woke_tests
     ${CMAKE_SOURCE_DIR}/src/ui/components/module_card.cpp         # Step 6: the module card
     ${CMAKE_SOURCE_DIR}/src/ui/components/sidebar.cpp             # Step 6: navigation + badges
     ${CMAKE_SOURCE_DIR}/src/ui/components/search_bar.cpp          # Step 6: the module filter
-    ${CMAKE_SOURCE_DIR}/src/ui/notifications.cpp)                 # Step 6: the toast pool
+    ${CMAKE_SOURCE_DIR}/src/ui/notifications.cpp                  # Step 6: the toast pool
+    ${CMAKE_SOURCE_DIR}/src/modules/game_writes.cpp               # Step 7: the write seam
+    ${CMAKE_SOURCE_DIR}/src/ui/hud.cpp                            # Step 7: the overlay renderer
+    ${CMAKE_SOURCE_DIR}/src/ui/overlay.cpp)                        # Step 7: the overlay policy
 
 target_include_directories(woke_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src

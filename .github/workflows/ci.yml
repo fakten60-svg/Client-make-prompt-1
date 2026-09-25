@@ -99,12 +99,19 @@ jobs:
             'modules: config loaded',  # step 5: the registry boot step is compiled in
             'configs/default.json',    # step 5: persistence is compiled in
             'Sprint State',            # step 5: the example modules are compiled in
-            'Zoom Amount',             # step 5: the example modules are compiled in
             'Search modules...',       # step 6: the search field component is compiled in
             'RSHIFT',                  # step 6: the keybind chip's key-name table is compiled in
             'GENERAL',                 # step 6: the sidebar's navigation groups are compiled in
             'keybind: capturing',      # step 6: the chip's capture mode is wired to the GUI
-            'notifications: pool full' # step 6: the toast pool is wired to the GUI
+            'notifications: pool full', # step 6: the toast pool is wired to the GUI
+            'Fullbright',              # step 7: the Fullbright module is registered
+            'Gamma option value',      # step 7: the gamma write seam is compiled in
+            'Zoom magnification',      # step 7: the Zoom module is registered
+            'How far ahead to predict',# step 7: the Trajectories module is registered
+            'Custom Crosshair',        # step 7: the crosshair module is registered
+            'Arraylist ordering',      # step 7: the HUD module is registered
+            'Open or close the ClickGUI overlay.', # step 7: the Misc/ClickGUI module is present
+            ' fps'                     # step 7: the in-world overlay renderer is compiled in
           )
           foreach ($marker in $markers) {
             if (-not $text.Contains($marker)) { throw "woke.dll is missing the marker '$marker'" }

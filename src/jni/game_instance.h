@@ -54,4 +54,15 @@ void shutdown() noexcept;
 [[nodiscard]] Maybe<double> mouse_x() noexcept;
 [[nodiscard]] Maybe<double> mouse_y() noexcept;
 
+// ── Client-side option reads and writes (roadmap step 7) ─────────────────────────
+//
+// The gamma and field-of-view options, read and written through the game's own SimpleOption
+// setValue path so the game's own clamping and change callbacks still run. These are the only
+// writes the client performs, and they are exactly what Fullbright and Zoom are built on: a
+// value goes in while the module is enabled and the seam captures the original to put back.
+[[nodiscard]] Maybe<float> gamma() noexcept;
+[[nodiscard]] Maybe<float> fov() noexcept;
+[[nodiscard]] bool set_gamma(float gamma) noexcept;
+[[nodiscard]] bool set_fov(float degrees) noexcept;
+
 } // namespace woke::game

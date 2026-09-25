@@ -1,0 +1,66 @@
+plugins {
+    id 'fabric-loom' version "${loomVersion}"
+    id 'maven-publish'
+}
+
+version = "${modVersion}+mc${minecraftVersion}"
+group = mavenGroup
+
+base {
+    archivesName = 'woke-fabric'
+}
+
+repositories {
+    // Loom adds Fabric's maven and Mojang's libraries automatically.
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraftVersion}"
+    mappings "net.fabricmc:yarn:${yarnMappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${loaderVersion}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabricVersion}"
+}
+
+processResources {
+    inputs.property 'version', project.version
+
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+    it.options.encoding = 'UTF-8'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+jar {
+    from('LICENSE-woke-fabric') {
+        rename { "${it}_${project.base.archivesName.get()}" }
+    }
+}
+
+// Host-safe unit tests: the pure-logic parts of the module system (settings, config JSON
+// round-trip, trajectory math) run on the JVM without the game installed.
+testing {
+    suites {
+        test {
+            useJUnitJupiter()
+        }
+    }
+}
+
+tasks.named('test') {
+    testLogging {
+        events 'failed', 'passed', 'skipped'
+        exceptionFormat 'full'
+    }
+}
