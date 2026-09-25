@@ -15,7 +15,11 @@ inline int g_checks = 0;
 inline int g_failures = 0;
 
 inline void section(const char* name) {
+    // Flushed per section, not just at exit: if a section ever crashes on one host only
+    // (different CRT, different optimiser), CI must say which section died instead of
+    // reporting a silent segfault with no prior output.
     std::printf("\n[%s]\n", name);
+    std::fflush(stdout);
 }
 
 inline void report(const char* file, int line, const char* expression) {
@@ -35,6 +39,7 @@ inline void check_string(const char* file, int line, const char* expression, con
     report(file, line, expression);
     std::printf("       actual:   \"%s\"\n", actual != nullptr ? actual : "(null)");
     std::printf("       expected: \"%s\"\n", expected != nullptr ? expected : "(null)");
+    std::fflush(stdout);
 }
 
 inline int summarize() {
@@ -49,6 +54,7 @@ inline int summarize() {
         ++woke_test::g_checks;                                    \
         if (!(condition)) {                                       \
             woke_test::report(__FILE__, __LINE__, #condition);    \
+            std::fflush(stdout);                                \
         }                                                         \
     } while (false)
 
