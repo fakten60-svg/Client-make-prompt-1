@@ -52,11 +52,36 @@ public:
         fov_saved_ = false;
     }
 
+    [[nodiscard]] game::Maybe<bool> sprint_key_pressed() noexcept override {
+        return game::sprint_key_pressed();
+    }
+
+    bool apply_sprint(bool pressed) noexcept override {
+        if (!sprint_saved_) {
+            const game::Maybe<bool> base = game::sprint_key_pressed();
+            if (base.valid) {
+                saved_sprint_ = base.value;
+                sprint_saved_ = true;
+            }
+        }
+        return game::set_sprint_key_pressed(pressed);
+    }
+
+    void restore_sprint() noexcept override {
+        if (!sprint_saved_) {
+            return;
+        }
+        (void)game::set_sprint_key_pressed(saved_sprint_);
+        sprint_saved_ = false;
+    }
+
 private:
     bool gamma_saved_ = false;
     float saved_gamma_ = 0.0f;
     bool fov_saved_ = false;
     float saved_fov_ = 70.0f;
+    bool sprint_saved_ = false;
+    bool saved_sprint_ = false;
 };
 
 JniGameWrites g_jni_writes{};

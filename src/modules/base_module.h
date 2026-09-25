@@ -13,6 +13,11 @@
 //     has flipped, so a hook can never observe a "disabled module that thinks it is enabled".
 //   * A constructor never touches the JVM (§4.4). Modules are constructed at boot, before any
 //     bridge exists; all game interaction happens in on_tick/on_render through the game façade.
+//
+// The module's own toggle bind is registered as its *last* setting (roadmap step 8). That single
+// decision is what makes a rebind persist: the config engine already walks settings, so "the key
+// that toggles this" becomes an ordinary value with no per-module persistence code, and the
+// Keybinds page is a filter over the same walk rather than a second source of truth.
 
 #include <array>
 #include <cstddef>
@@ -34,11 +39,10 @@ public:
     [[nodiscard]] const char* description() const noexcept { return description_; }
     [[nodiscard]] Category category() const noexcept { return category_; }
     [[nodiscard]] bool enabled() const noexcept { return enabled_; }
-    // Bind that toggles this module (0 = unbound). Step 6 makes it rebindable through the keybind
-    // chip's capture mode; persisting the bind alongside the module's settings lands with the
-    // Keybinds page in step 8, so a rebind is currently session-scoped.
-    [[nodiscard]] int bind() const noexcept { return bind_; }
-    void set_bind(int virtual_key) noexcept { bind_ = virtual_key < 0 ? 0 : virtual_key; }
+    // Bind that toggles this module (0 = unbound). It is a persisted setting (registered last), so
+    // the keybind chip's rebind survives a config save/reload and a DLL reinjection.
+    [[nodiscard]] int bind() const noexcept { return bind_setting_.value(); }
+    void set_bind(int virtual_key) noexcept { bind_setting_.set(virtual_key); }
 
     // The module's settings, in declaration order. Erased on purpose: the config engine and the
     // GUI need "walk the settings", not the array's size at compile time. register_settings()
@@ -97,19 +101,56 @@ public:
     virtual void on_tick(float /*delta_seconds*/) noexcept {}
     virtual void on_render(float /*delta_seconds*/) noexcept {}
 
+    // Key dispatch (roadmap step 8). Both edges arrive, so a module can react to a press, a
+    // release, or both. Returns true when the key belongs to this module, which is what the
+    // dispatcher uses to mark the event consumed and stop the game from also seeing it.
+    //
+    // The default is the step-5 behaviour - press toggles - now expressed as a module hook
+    // instead of hard-coded manager logic, so an action module (Panic) or a hold module can
+    // replace it without the manager knowing it exists.
+    [[nodiscard]] virtual bool on_key(int virtual_key, bool down) noexcept {
+        if (virtual_key == 0 || virtual_key != bind()) {
+            return false;
+        }
+        if (hold_to_activate()) {
+            return down ? enable() : disable();
+        }
+        return down && set_enabled(!enabled());
+    }
+
+    // True when the bind only holds the module on while the key is held (ClickGUI's hold mode, a
+    // future aim-assist paddle). Press-to-toggle is the default.
+    [[nodiscard]] virtual bool hold_to_activate() const noexcept { return false; }
+
+    // True for a module that *does* something instead of holding an on/off state (Panic, the
+    // profile hotkeys' helper). The GUI draws no toggle for it and the keybind toast skips it,
+    // because "Panic: off" is a sentence that should never reach the user.
+    [[nodiscard]] virtual bool is_action() const noexcept { return false; }
+
 protected:
     BaseModule(const char* name, const char* description, Category category, int bind) noexcept
-        : name_(name), description_(description), category_(category), bind_(bind) {}
+        : name_(name), description_(description), category_(category),
+          bind_setting_("bind", "Key that toggles this module", bind) {
+        // The bind is present from construction, so a module that carries no settings of its own
+        // (Panic) still gets a persisted one. register_settings() re-points slot 0..N-1 at the
+        // module's own settings and leaves the bind last.
+        setting_ptrs_[0] = &bind_setting_;
+        setting_count_ = 1;
+    }
 
     // Called once by the concrete module's constructor, right after its settings members are
-    // initialised: the array is built from member addresses, so it must run after them.
+    // initialised: the array is built from member addresses, so it must run after them. The
+    // module's own bind is appended as the last setting (see the file comment), which is why the
+    // bound is kMaxSettings - 1 rather than kMaxSettings.
     template <std::size_t N>
     void register_settings(std::array<settings::Setting*, N> entries) noexcept {
-        static_assert(N <= kMaxSettings, "a module cannot carry more than kMaxSettings");
+        static_assert(N + 1 <= kMaxSettings,
+            "a module cannot carry more than kMaxSettings - 1 settings plus its bind");
         for (std::size_t index = 0; index < N; ++index) {
             setting_ptrs_[index] = entries[index];
         }
-        setting_count_ = N;
+        setting_ptrs_[N] = &bind_setting_;
+        setting_count_ = N + 1;
     }
 
     static constexpr std::size_t kMaxSettings = 8;
@@ -118,8 +159,11 @@ private:
     const char* name_ = nullptr;
     const char* description_ = nullptr;
     Category category_ = Category::Misc;
-    int bind_ = 0;
     bool enabled_ = false;
+
+    // The module's toggle bind, as a setting. Declared after the plain fields so the constructor's
+    // member-init list (name, description, category, bind) still runs in declaration order.
+    settings::BindSetting bind_setting_;
 
     // Mutable pointers behind a const module: settings are the module's configuration state, and
     // both the config engine and the GUI legitimately mutate them through a registry lookup.

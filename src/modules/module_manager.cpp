@@ -80,22 +80,44 @@ std::size_t ModuleManager::disable_all() noexcept {
 // enabled_ bucket stale. The GUI and the config engine therefore call notify_changed() after any
 // direct toggle - the same pattern the deferred-removal hook engine uses: mutate, then report.
 
+// Every module sees both edges and decides for itself: the default hook press-toggles, a hold
+// module tracks the key, and an action module (Panic) fires once and stays off. The manager only
+// owns the two facts it can own without knowing any module's policy - whether the key was claimed,
+// and whether the enabled buckets need recomputing. It compares the enabled flag around each call
+// rather than assuming a toggle, because an action module changes *other* modules' state.
 bool ModuleManager::handle_key(int virtual_key, bool down) noexcept {
-    if (!down || virtual_key == 0) {
+    if (virtual_key == 0) {
         return false;
     }
     bool consumed = false;
+    bool changed = false;
     for (std::size_t index = 0; index < count_; ++index) {
         BaseModule* module = modules_[index];
-        if (module->bind() == virtual_key) {
-            module->set_enabled(!module->enabled());
+        const bool was_enabled = module->enabled();
+        if (module->on_key(virtual_key, down)) {
             consumed = true;
         }
+        if (module->enabled() != was_enabled) {
+            changed = true;
+        }
     }
-    if (consumed) {
+    if (changed) {
         recompute_buckets();
     }
     return consumed;
+}
+
+bool ModuleManager::has_toggle_bind(int virtual_key) const noexcept {
+    if (virtual_key == 0) {
+        return false;
+    }
+    for (std::size_t index = 0; index < count_; ++index) {
+        const BaseModule* module = modules_[index];
+        if (!module->is_action() && module->bind() == virtual_key) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void ModuleManager::on_tick(float delta_seconds) noexcept {

@@ -9,6 +9,7 @@ void test_ui_draw();
 void test_module_system();
 void test_widgets();
 void test_visual_modules();
+void test_step8_modules();
 
 int main() {
     std::printf("woke.wtf host-side logic tests\n");
@@ -23,6 +24,7 @@ int main() {
     test_module_system();
     test_widgets();
     test_visual_modules();
+    test_step8_modules();
 
     return woke_test::summarize();
 }

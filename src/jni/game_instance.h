@@ -65,4 +65,13 @@ void shutdown() noexcept;
 [[nodiscard]] bool set_gamma(float gamma) noexcept;
 [[nodiscard]] bool set_fov(float degrees) noexcept;
 
+// ── The sprint key (roadmap step 8) ──────────────────────────────────────────────
+//
+// The client's sprint key binding, read and written through the game's own KeyBinding, so vanilla
+// input handling (canSprint/shouldStopSprinting and the sprint packet the game itself sends) is
+// what responds. Auto Sprint is therefore a *key hold*, not a movement override: the client never
+// synthesizes a packet, and releasing restores whatever the user's own key was doing.
+[[nodiscard]] Maybe<bool> sprint_key_pressed() noexcept;
+[[nodiscard]] bool set_sprint_key_pressed(bool pressed) noexcept;
+
 } // namespace woke::game

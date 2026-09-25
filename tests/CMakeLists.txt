@@ -16,6 +16,7 @@ add_executable(woke_tests
     test_module_system.cpp
     test_widgets.cpp
     test_visual_modules.cpp
+    test_step8_modules.cpp                                    # Step 8: bind persistence, dispatch, action modules
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp

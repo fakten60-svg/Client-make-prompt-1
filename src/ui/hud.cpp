@@ -1,6 +1,7 @@
 #include "ui/hud.h"
 
 #include <array>
+#include <cmath>
 #include <cstring>
 
 #include "core/version.h"
@@ -21,6 +22,18 @@ constexpr float kRowPadding = 8.0f;
 constexpr float kAccentBarWidth = 2.0f;
 constexpr float kMarkerRadius = 2.5f;
 constexpr float kOutlineExtra = 1.5f;
+constexpr float kChipHeight = 20.0f;
+constexpr float kWatermarkHeight = 20.0f;
+constexpr float kRowAdvance = 24.0f;
+
+// The unit table the chip formats with, index-matched to Movement/Velocity Display's enum. Kept
+// here rather than included from the module so the renderer stays a pure function of the frame.
+constexpr const char* kSpeedUnits[] = {"m/s", "km/h", "mph"};
+// Index-matched to kSpeedUnits: one table means the label and the factor can never disagree.
+constexpr double kSpeedFactors[] = {1.0, 3.6, 2.2369362920544};
+constexpr std::size_t kSpeedUnitCount = sizeof(kSpeedUnits) / sizeof(kSpeedUnits[0]);
+static_assert(sizeof(kSpeedFactors) / sizeof(kSpeedFactors[0]) == kSpeedUnitCount,
+    "the speed label and factor tables must stay index-matched");
 
 // One arraylist entry: the module's name, its measured width and its category accent. The width
 // is measured once, here, because the row is sized from it and the draw call is reused.
@@ -72,13 +85,36 @@ void draw_watermark(ImDrawList* draw_list, const Frame& frame, float alpha) noex
     text.format("%s %s  |  %d fps", version::kClientName, version::kVersion,
         static_cast<int>(frame.frames_per_second + 0.5f));
 
-    const float height = 20.0f;
-    const Rect plate{kMargin, kMargin, draw::text_width(text.c_str()) + (kRowPadding * 2.0f), height};
+    const Rect plate{kMargin, kMargin, draw::text_width(text.c_str()) + (kRowPadding * 2.0f),
+        kWatermarkHeight};
 
     draw::rounded_rect(draw_list, plate, util::scale_alpha(theme::color::kCard, alpha * 0.85f),
         theme::metrics::kFrameRounding);
     draw::rounded_rect(draw_list,
         Rect{plate.x, plate.y, kAccentBarWidth, plate.h},
+        util::scale_alpha(theme::color::kAccent, alpha), theme::metrics::kFrameRounding);
+    draw::text_in(draw_list, plate.offset(kRowPadding, 0.0f), text.c_str(),
+        util::scale_alpha(theme::color::kText, alpha), draw::Align::Left);
+}
+
+// The speed readout, top-left under the watermark (roadmap step 8). Same plate as the watermark so
+// the two chips read as one column rather than two unrelated badges.
+void draw_velocity_chip(ImDrawList* draw_list, const Frame& frame, float alpha) noexcept {
+    const double meters_per_second = std::sqrt(
+        (frame.velocity.x * frame.velocity.x) + (frame.velocity.z * frame.velocity.z));
+    // An out-of-range unit index falls back to the first entry rather than to zero, so a stale
+    // index can never show a stopped player.
+    const std::size_t index = frame.velocity_units < kSpeedUnitCount ? frame.velocity_units : 0;
+
+    util::FixedString<32> text;
+    text.format("%.1f %s", meters_per_second * kSpeedFactors[index], kSpeedUnits[index]);
+
+    const float y = frame.watermark ? (kMargin + kRowAdvance) : kMargin;
+    const Rect plate{kMargin, y, draw::text_width(text.c_str()) + (kRowPadding * 2.0f), kChipHeight};
+
+    draw::rounded_rect(draw_list, plate, util::scale_alpha(theme::color::kCard, alpha * 0.85f),
+        theme::metrics::kFrameRounding);
+    draw::rounded_rect(draw_list, Rect{plate.x, plate.y, kAccentBarWidth, plate.h},
         util::scale_alpha(theme::color::kAccent, alpha), theme::metrics::kFrameRounding);
     draw::text_in(draw_list, plate.offset(kRowPadding, 0.0f), text.c_str(),
         util::scale_alpha(theme::color::kText, alpha), draw::Align::Left);
@@ -188,7 +224,7 @@ void draw_trajectory(ImDrawList* draw_list, const Frame& frame, float alpha) noe
 
 bool active(const Frame& frame) noexcept {
     return frame.watermark || frame.arraylist || frame.crosshair
-        || (frame.trajectory && frame.world_live);
+        || (frame.velocity_chip && frame.world_live) || (frame.trajectory && frame.world_live);
 }
 
 void render(ImDrawList* draw_list, const Frame& frame) noexcept {
@@ -208,6 +244,9 @@ void render(ImDrawList* draw_list, const Frame& frame) noexcept {
     }
     if (frame.watermark) {
         draw_watermark(draw_list, frame, alpha);
+    }
+    if (frame.velocity_chip && frame.world_live) {
+        draw_velocity_chip(draw_list, frame, alpha);
     }
     if (frame.arraylist) {
         draw_arraylist(draw_list, frame, alpha);

@@ -24,6 +24,7 @@ constexpr const char* kMouseClass = "class_312";        // Mouse
 constexpr const char* kVec3dClass = "class_243";        // Vec3d
 constexpr const char* kGameOptionsClass = "class_315";  // GameOptions
 constexpr const char* kSimpleOptionClass = "class_7172"; // SimpleOption
+constexpr const char* kKeyBindingClass = "class_304";   // KeyBinding
 
 struct Handles {
     jclass client_class = nullptr;
@@ -65,6 +66,12 @@ struct Handles {
     jfieldID game_options_fov = nullptr;
     jmethodID simple_option_get_value = nullptr;
     jmethodID simple_option_set_value = nullptr;
+
+    // The sprint key (roadmap step 8). The key's held state is a plain boolean on KeyBinding, so
+    // unlike a SimpleOption write there is nothing to box.
+    jfieldID game_options_sprint_key = nullptr;
+    jmethodID key_binding_is_pressed = nullptr;
+    jmethodID key_binding_set_pressed = nullptr;
 };
 
 Handles g_handles{};
@@ -139,6 +146,10 @@ void resolve_handles() noexcept {
     take(g_handles.game_options_fov, jni::field_of(kGameOptionsClass, "fov"));
     take(g_handles.simple_option_get_value, jni::method_of(kSimpleOptionClass, "getValue"));
     take(g_handles.simple_option_set_value, jni::method_of(kSimpleOptionClass, "setValue"));
+
+    take(g_handles.game_options_sprint_key, jni::field_of(kGameOptionsClass, "sprintKey"));
+    take(g_handles.key_binding_is_pressed, jni::method_of(kKeyBindingClass, "isPressed"));
+    take(g_handles.key_binding_set_pressed, jni::method_of(kKeyBindingClass, "setPressed"));
 }
 
 // True when the last call left no pending exception. A pending exception would poison every
@@ -223,6 +234,23 @@ bool write_option(jfieldID option_field, float value) noexcept {
     }
     env->CallVoidMethod(option, g_handles.simple_option_set_value, boxed);
     return no_pending_exception(env);
+}
+
+// client.options.sprintKey is a KeyBinding object; both the read and the write go through it, so
+// the client's own input handling sees exactly what it would see from the keyboard.
+jobject sprint_binding(JNIEnv* env) noexcept {
+    if (g_handles.client_options == nullptr || g_handles.game_options_sprint_key == nullptr) {
+        return nullptr;
+    }
+    jobject options = env->GetObjectField(client_ref(), g_handles.client_options);
+    if (options == nullptr) {
+        return nullptr;
+    }
+    jobject binding = env->GetObjectField(options, g_handles.game_options_sprint_key);
+    if (binding == nullptr || !no_pending_exception(env)) {
+        return nullptr;
+    }
+    return binding;
 }
 
 } // namespace
@@ -603,6 +631,41 @@ bool set_gamma(float value) noexcept {
 
 bool set_fov(float degrees) noexcept {
     return write_option(g_handles.game_options_fov, degrees);
+}
+
+Maybe<bool> sprint_key_pressed() noexcept {
+    if (!ready() || g_handles.key_binding_is_pressed == nullptr) {
+        return missing<bool>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject binding = sprint_binding(env);
+    if (binding == nullptr) {
+        return missing<bool>();
+    }
+
+    const jboolean pressed = env->CallBooleanMethod(binding, g_handles.key_binding_is_pressed);
+    if (!no_pending_exception(env)) {
+        return missing<bool>();
+    }
+    return Maybe<bool>::of(pressed != JNI_FALSE);
+}
+
+bool set_sprint_key_pressed(bool pressed) noexcept {
+    if (!ready() || g_handles.key_binding_set_pressed == nullptr) {
+        return false;
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject binding = sprint_binding(env);
+    if (binding == nullptr) {
+        return false;
+    }
+
+    env->CallVoidMethod(binding, g_handles.key_binding_set_pressed, pressed ? JNI_TRUE : JNI_FALSE);
+    return no_pending_exception(env);
 }
 
 } // namespace woke::game

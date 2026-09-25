@@ -234,13 +234,15 @@ void test_write_modules() {
     woke_test::section("fullbright and zoom modules");
 
     visual::Fullbright fullbright;
-    WOKE_CHECK(fullbright.setting_count() == 1);
+    // One setting of its own plus the bind BaseModule always registers (step 8).
+    WOKE_CHECK(fullbright.setting_count() == 2);
     WOKE_CHECK_STR(fullbright.name(), "Fullbright");
     WOKE_CHECK(fullbright.category() == woke::modules::Category::Visual);
 
     visual::Zoom zoom;
-    WOKE_CHECK(zoom.setting_count() == 2);
+    WOKE_CHECK(zoom.setting_count() == 3);
     WOKE_CHECK(zoom.bind() == 0x43);
+    WOKE_CHECK(zoom.settings()[2]->kind() == woke::settings::Kind::Bind);
 
     woke::modules::RecordingGameWrites recorder;
     recorder.seed(0.4f, 80.0f);

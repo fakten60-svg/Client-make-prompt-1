@@ -58,6 +58,12 @@ struct Frame {
     bool arraylist = false;
     bool arraylist_by_length = false;
 
+    // The speed chip (roadmap step 8: Movement/Velocity Display). `velocity_units` indexes that
+    // module's unit enum; the renderer owns its own label table, so this layer never includes a
+    // module header to format a number.
+    bool velocity_chip = false;
+    std::size_t velocity_units = 0;
+
     bool crosshair = false;
     CrosshairStyle crosshair_style{};
 

@@ -46,10 +46,12 @@ public:
 
     [[nodiscard]] bool hold_mode() const noexcept { return hold_.value(); }
 
+    // Step 8 wires the setting through the dispatcher's hold path: with a bind set, the GUI opens
+    // on the press edge and closes on the release edge, and with no bind the behaviour is unchanged
+    // (the overlay's own toggle key, handled one boot step earlier, remains the primary affordance).
+    [[nodiscard]] bool hold_to_activate() const noexcept override { return hold_.value(); }
+
 private:
-    // Reserved for the hold-to-show behaviour in step 9's input pass; press-to-toggle is what the
-    // overlay's own handler implements today, so the default is off and the setting is honest
-    // about being unwired yet.
     settings::BoolSetting hold_{"hold_mode", "Keep the GUI open only while the key is held", false};
 };
 
