@@ -858,7 +858,9 @@ void draw_settings_rows(ImDrawList* draw_list, float alpha) noexcept {
     }
 }
 
-void draw_module_cards(ImDrawList* draw_list, float alpha) noexcept {
+// Draw-only pass: the cards were handed this frame's alpha in the input phase
+// (handle_module_cards sets it before interacting), so this function takes no alpha of its own.
+void draw_module_cards(ImDrawList* draw_list) noexcept {
     for (std::size_t slot = 0; slot < g_state.card_count; ++slot) {
         const std::size_t registry_index = g_state.card_registry[slot];
         const Rect& card = g_state.card_rects[slot];
@@ -1087,7 +1089,7 @@ void draw_content(ImDrawList* draw_list, const Layout& layout, float collapse) n
         const bool has_modules =
             modules::manager().category_total(modules::category_from_section(g_state.selected)) > 0;
         if (has_modules) {
-            draw_module_cards(draw_list, alpha);
+            draw_module_cards(draw_list);
             // The rows come after every card, so the open drawer's shell is already beneath them.
             draw_settings_rows(draw_list, alpha);
         } else {
