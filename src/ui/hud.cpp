@@ -117,7 +117,7 @@ void sort_rows(std::array<Row, modules::ModuleManager::kMaxModules>& rows, std::
 void draw_watermark(ImDrawList* draw_list, const Frame& frame, float alpha) noexcept {
     util::FixedString<64> text;
     text.format("%s %s  |  %d fps", version::kClientName, version::kVersion,
-        static_cast<int>(frame.frames_per_second + 0.5f));
+        static_cast<int>(std::lround(frame.frames_per_second)));
 
     const Rect plate{kMargin, kMargin, draw::text_width(text.c_str()) + (kRowPadding * 2.0f),
         kWatermarkHeight};

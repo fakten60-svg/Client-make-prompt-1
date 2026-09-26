@@ -12,6 +12,15 @@ function(woke_apply_warnings target)
             /utf-8          # source and execution charset
             /MP             # parallel compilation (faster low-end builds)
         )
+        # QA hardening: MSVC's static analyzer, first-party sources only. The CI static
+        # analysis job turns this on; external (vendored and system) code stays out of the
+        # analysis scope via /analyze:external-, so upstream noise can never reach the log.
+        # Deliberately combined with neither /Wx nor a curated ruleset: the pass runs as an
+        # evidence producer (findings land in the CI log for triage) until a real MSVC pass
+        # has told us which rules are actionable for game-thread code.
+        if(WOKE_ENABLE_MSVC_ANALYZE)
+            target_compile_options(${target} PRIVATE /analyze /analyze:external-)
+        endif()
         if(WOKE_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()

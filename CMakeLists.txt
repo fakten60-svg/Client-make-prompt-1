@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(woke
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "woke.wtf - native C++ injection utility client for Minecraft 1.21.11 Fabric"
     LANGUAGES C CXX)
 
@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(WOKE_BUILD_TESTS          "Build host-side logic tests (portable, no Windows needed)" ON)
 option(WOKE_BUILD_INJECTOR       "Build the optional launcher/injector helper"                ON)
 option(WOKE_WARNINGS_AS_ERRORS   "Treat first-party warnings as errors"                      OFF)
+option(WOKE_ENABLE_MSVC_ANALYZE  "Run MSVC /analyze on first-party sources (evidence pass)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")

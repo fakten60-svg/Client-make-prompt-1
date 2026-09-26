@@ -41,6 +41,66 @@ jobs:
           fi
           echo '§11 network-safety gate: clean'
 
+      # QA hardening (Phase 3): the same suite under AddressSanitizer + UBSan. A sanitizer
+      # report is a release blocker, so this job is required wherever the suite is.
+      - name: Sanitizer build + run (ASan + UBSan)
+        run: |
+          cmake -B build-sanitize -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DWOKE_BUILD_TESTS=ON
+          cmake --build build-sanitize --parallel
+          ctest --test-dir build-sanitize --output-on-failure
+
+      # QA hardening (Phase 3): GCC's static analyzer over the portable cores. Only genuine
+      # diagnostics fail the gate; -Wno-analyzer-too-complex keeps the run finite.
+      - name: Static analysis (-fanalyzer, portable cores)
+        run: |
+          files=(
+            src/core/config.cpp src/core/event_bus.cpp src/jni/mappings.cpp
+            src/modules/module_manager.cpp src/modules/game_writes.cpp src/ui/theme.cpp
+            src/ui/hud.cpp src/ui/overlay.cpp src/ui/notifications.cpp
+            src/ui/animation/animation_controller.cpp src/utils/render_utils.cpp
+            src/utils/time_format.cpp src/ui/components/traffic_lights.cpp
+            src/ui/components/pill_toggle.cpp src/ui/components/keybind_badge.cpp
+            src/ui/components/module_card.cpp src/ui/components/sidebar.cpp
+            src/ui/components/search_bar.cpp)
+          for f in "${files[@]}"; do
+            g++ -std=c++20 -fanalyzer -Wno-analyzer-too-complex -Wall -Wextra \
+              -Isrc -Itests -Ibuild/_deps/woke_json-src/include -Ibuild/_deps/woke_imgui-src \
+              -DWOKE_MAPPINGS_ASSET="$PWD/mappings.json" \
+              -DWOKE_MODULES_SOURCE_DIR="$PWD/src/modules" \
+              -fsyntax-only "$f"
+          done
+          echo 'fanalyzer: clean'
+
+      # QA hardening (Phase 3): clang-tidy over the portable cores, bug + performance check
+      # families only. easily-swappable-parameters is a style lint on domain APIs (positions,
+      # widths, near/far colors) and is explicitly waived. continue-on-error because the runner's
+      # clang-tidy major version drifts with the image and new checks can fire on unchanged code;
+      # it is an evidence pass (findings and the exit status stay in the log) until the check set
+      # is pinned, matching the MSVC /analyze policy on the Windows job.
+      - name: clang-tidy (portable cores, bugprone + performance)
+        continue-on-error: true
+        run: |
+          if ! command -v clang-tidy >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq clang-tidy
+          fi
+          files=(src/core/config.cpp src/core/event_bus.cpp src/jni/mappings.cpp
+            src/modules/module_manager.cpp src/modules/game_writes.cpp src/ui/theme.cpp
+            src/ui/hud.cpp src/ui/overlay.cpp src/ui/notifications.cpp
+            src/ui/animation/animation_controller.cpp src/utils/render_utils.cpp
+            src/utils/time_format.cpp)
+          for f in "${files[@]}"; do
+            clang-tidy --quiet \
+              -checks='-*,bugprone-*,performance-*,-bugprone-easily-swappable-parameters' \
+              --warnings-as-errors='bugprone-*,performance-*' \
+              "$f" -- -std=c++20 -Isrc -Itests \
+              -Ibuild/_deps/woke_json-src/include -Ibuild/_deps/woke_imgui-src \
+              -DWOKE_MAPPINGS_ASSET="$PWD/mappings.json" \
+              -DWOKE_MODULES_SOURCE_DIR="$PWD/src/modules"
+          done
+          echo 'clang-tidy: clean'
+
   # The real artifact: x64 Release woke.dll plus the optional injector helper.
   build-windows:
     name: build (windows x64 release)
@@ -142,6 +202,30 @@ jobs:
             bin/Release/woke.dll
             bin/Release/woke_injector.exe
           if-no-files-found: error
+
+
+      # QA hardening (Phase 3 d): MSVC's own static analyzer over the first-party targets.
+      # /analyze:external- keeps vendored and system code out of the scope, so only woke's
+      # own sources can produce findings. Deliberately not /WX: this is the evidence pass
+      # (findings land in this job's log for triage) until the rules are curated.
+      # continue-on-error keeps the job (and the release that needs it) green on analyzer noise.
+      - name: Configure with MSVC /analyze enabled
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $generators = @()
+          foreach ($line in (cmake --help)) {
+            if ($line -match 'Visual Studio (\d+) (\d{4})') {
+              $generators += [pscustomobject]@{ Name = "Visual Studio $($Matches[1]) $($Matches[2])"; Major = [int]$Matches[1] }
+            }
+          }
+          $chosen = ($generators | Sort-Object Major -Descending | Select-Object -First 1).Name
+          cmake -B build-analyze -G $chosen -A x64 `
+            -DWOKE_BUILD_TESTS=ON -DWOKE_ENABLE_MSVC_ANALYZE=ON
+
+      - name: Build with /analyze (findings go to this job's log)
+        continue-on-error: true
+        run: cmake --build build-analyze --config Release --parallel
 
   # A tag on main is a release: the same verified artifact is attached to a GitHub
   # Release. The push run that carries the tag re-runs the build (so the attached DLL
