@@ -30,6 +30,7 @@ set(WOKE_CORE_SOURCES
     src/dllmain.cpp                  # Step 1: loader-lock-safe entry point
     src/core/lifecycle.cpp           # Step 1: single init/teardown owner
     src/core/logger.cpp              # Step 1: console + multi-session file logging
+    src/core/soak.cpp                # Step 9: the soak reporter (Windows-only, game-thread fed)
     src/utils/time_format.cpp        # Step 1: local-timezone timestamp formatting
     src/utils/win32_utils.cpp        # Step 1: paths, console, module resolution
     src/jni/mappings.cpp             # Step 2: mappings.json registry (portable)

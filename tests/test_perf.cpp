@@ -17,6 +17,7 @@
 // log transcript this step's reporter emits.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -91,9 +92,11 @@ void test_perf_policy() {
     WOKE_CHECK(average.add(-3.0f, 0.5f) == 10.0f);
 
     // A NaN would poison the average forever (NaN + x = NaN): refused the same way. NaN != NaN
-    // is the identity check, spelled that way in perf.h because it needs no <cmath>.
-    const float nan = 0.0f / 0.0f;
-    WOKE_CHECK(average.add(nan, 0.5f) == 10.0f);
+    // is the identity check, spelled that way in perf.h because it needs no <cmath>. The value
+    // comes from a runtime call, not a literal expression: MSVC evaluates 0.0f/0.0f at compile
+    // time and rejects it outright (C2124), which is itself a fair reason to keep it out.
+    const float invalid = std::sqrt(-1.0f);
+    WOKE_CHECK(average.add(invalid, 0.5f) == 10.0f);
     WOKE_CHECK(average.value == 10.0f);
 
     // Reset returns to the unseeded state - the next sample seeds again.
@@ -112,8 +115,8 @@ void test_perf_policy() {
     WOKE_CHECK(!perf::soak_interval_ok(0.1f, 0.51f));
 
     // A NaN average must read as a failure, never as a pass.
-    WOKE_CHECK(!perf::soak_interval_ok(nan, 0.4f));
-    WOKE_CHECK(!perf::soak_interval_ok(0.1f, nan));
+    WOKE_CHECK(!perf::soak_interval_ok(invalid, 0.4f));
+    WOKE_CHECK(!perf::soak_interval_ok(0.1f, invalid));
 }
 
 void test_network_safety_invariant() {
