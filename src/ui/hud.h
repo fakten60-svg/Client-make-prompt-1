@@ -115,6 +115,13 @@ struct Frame {
     bool smash_flash = false;
     float flash_intensity = 0.5f;
 
+    // Wind Charge CD (Mace, step 8d): the held item's own item-cooldown progress, 0..1, straight
+    // from the game's ItemCooldownManager. Drawn only while a cooldown is running (progress < 1);
+    // the fill layer owns that gate, the renderer stays a pure function of the frame.
+    bool wind_charge_chip = false;
+    float wind_charge_progress = 1.0f;
+    Rgba wind_charge_color = util::from_hex(0xF2C14E);
+
     // ── Step 8c: Misc / Movement / Spear readouts ─────────────────────────────
     //
     // Same shape as the step-8b chips: the module decides *that* and *how*, the frame builder

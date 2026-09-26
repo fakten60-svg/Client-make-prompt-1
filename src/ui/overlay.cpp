@@ -7,6 +7,7 @@
 #include "modules/mace/mace_stats.h"
 #include "modules/mace/smash_flash.h"
 #include "modules/mace/smash_potential.h"
+#include "modules/mace/wind_charge_cd.h"
 #include "modules/misc/friend_manager.h"
 #include "modules/module_manager.h"
 #include "modules/movement/safe_walk.h"
@@ -47,6 +48,9 @@ constexpr const char* kRiptideName = "Riptide Indicator";
 constexpr const char* kTridentName = "Trident Cooldown";
 constexpr const char* kLoyaltyName = "Loyalty HUD";
 
+// Step 8d. The catalogue's last readout: the held item's own item-cooldown.
+constexpr const char* kWindChargeName = "Wind Charge CD";
+
 // One enabled check, spelled once. `find` is a name lookup against the fixed registry, so a
 // missing name is a null pointer and the dynamic_cast below is a no-op in that case.
 template <typename Module>
@@ -81,7 +85,8 @@ bool wanted() noexcept {
         || enabled_named<modules::movement::SafeWalk>(registry, kSafeWalkName)
         || enabled_named<modules::spear::RiptideIndicator>(registry, kRiptideName)
         || enabled_named<modules::spear::TridentCooldown>(registry, kTridentName)
-        || enabled_named<modules::spear::LoyaltyHud>(registry, kLoyaltyName)) {
+        || enabled_named<modules::spear::LoyaltyHud>(registry, kLoyaltyName)
+        || enabled_named<modules::mace::WindChargeCd>(registry, kWindChargeName)) {
         return true;
     }
     return false;

@@ -87,6 +87,12 @@ void shutdown() noexcept;
 // The game's own "a riptide is in progress" flag (roadmap step 8: the Spear set).
 [[nodiscard]] Maybe<bool> riptide_active() noexcept;
 
+// The held item's own item-cooldown progress (roadmap step 8: Mace Wind Charge CD), 0..1, where
+// 1.0 means "fully ready". Read through the game's ItemCooldownManager.getCooldownProgress(stack,
+// tickProgress) - the exact number the vanilla cooldown overlay uses - so a wind charge's timer is
+// the game's own answer, never a client-side guess at its duration.
+[[nodiscard]] Maybe<float> held_item_cooldown_progress() noexcept;
+
 // ── The sprint key (roadmap step 8) ──────────────────────────────────────────────────
 //
 // The client's sprint key binding, read and written through the game's own KeyBinding, so vanilla

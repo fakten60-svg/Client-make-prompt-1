@@ -17,6 +17,7 @@
 #include "modules/mace/smash_damage.h"
 #include "modules/mace/smash_flash.h"
 #include "modules/mace/smash_potential.h"
+#include "modules/mace/wind_charge_cd.h"
 #include "modules/misc/friend_manager.h"
 #include "modules/module_manager.h"
 #include "modules/movement/safe_walk.h"
@@ -38,6 +39,7 @@ using modules::combat::TargetHud;
 using modules::mace::MaceStats;
 using modules::mace::SmashFlash;
 using modules::mace::SmashPotential;
+using modules::mace::WindChargeCd;
 using modules::misc::FriendManager;
 using modules::movement::SafeWalk;
 using modules::spear::LoyaltyHud;
@@ -62,6 +64,7 @@ struct Step8Modules {
     RiptideIndicator* riptide = nullptr;
     TridentCooldown* trident = nullptr;
     LoyaltyHud* loyalty = nullptr;
+    WindChargeCd* wind_charge = nullptr;
     std::size_t resolved_count = static_cast<std::size_t>(-1);
 };
 
@@ -92,6 +95,8 @@ void resolve_step8_modules() noexcept {
     g_step8.trident =
         dynamic_cast<TridentCooldown*>(modules::manager().find("Trident Cooldown"));
     g_step8.loyalty = dynamic_cast<LoyaltyHud*>(modules::manager().find("Loyalty HUD"));
+    g_step8.wind_charge =
+        dynamic_cast<WindChargeCd*>(modules::manager().find("Wind Charge CD"));
 }
 
 // The two chips that need no game state: the friend list size and the safe-walk engagement are
@@ -306,6 +311,26 @@ void read_loyalty(hud::Frame& frame, const game::Maybe<game::FixedName>& held) n
     frame.world_live = true;
 }
 
+// The held item's own item-cooldown (step 8d). Drawn only while the game is actually cooling the
+// item down: the manager reports progress 1.0 for an idle item, and a chip that read "100%" every
+// frame would be noise about nothing. With "hide when ready" off, the idle frame draws too.
+void read_wind_charge(hud::Frame& frame) noexcept {
+    if (g_step8.wind_charge == nullptr || !g_step8.wind_charge->enabled()) {
+        return;
+    }
+    const auto progress = game::held_item_cooldown_progress();
+    if (!progress.valid) {
+        return;
+    }
+    if (g_step8.wind_charge->hide_when_ready() && progress.value >= 1.0f) {
+        return; // ready: the module's own setting keeps the chip off
+    }
+    frame.wind_charge_chip = true;
+    frame.wind_charge_progress = progress.value;
+    frame.wind_charge_color = hud::accent_color_for(g_step8.wind_charge->color_index());
+    frame.world_live = true;
+}
+
 #endif // WOKE_HAVE_JNI
 
 } // namespace
@@ -328,6 +353,7 @@ void fill_step8_readouts(hud::Frame& frame) noexcept {
     read_riptide(frame, held);
     read_trident(frame, held);
     read_loyalty(frame, held);
+    read_wind_charge(frame);
 #endif
 }
 

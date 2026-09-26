@@ -32,6 +32,7 @@
 #include "modules/mace/smash_damage.h"
 #include "modules/mace/smash_flash.h"
 #include "modules/mace/smash_potential.h"
+#include "modules/mace/wind_charge_cd.h"
 #include "modules/module_manager.h"
 #include "ui/hud.h"
 #include "ui/overlay.h"
@@ -349,6 +350,70 @@ void test_hud_readouts() {
         hud::render(headless.list, frame);
         WOKE_CHECK(headless.vertices_added() == 0);
     }
+
+    // The wind-charge chip (step 8d) is a game read: it draws with a live world and not without.
+    {
+        hud::Frame frame = screen_frame();
+        frame.wind_charge_chip = true;
+        frame.wind_charge_progress = 0.35f;
+        frame.wind_charge_color = woke::util::from_hex(0xF2C14E);
+        frame.world_live = true;
+        WOKE_CHECK(hud::active(frame));
+        HeadlessFrame headless;
+        hud::render(headless.list, frame);
+        WOKE_CHECK(headless.vertices_added() > 0);
+    }
+    {
+        hud::Frame frame = screen_frame();
+        frame.wind_charge_chip = true;
+        frame.wind_charge_progress = 0.35f;
+        frame.world_live = false;
+        WOKE_CHECK(!hud::active(frame));
+        HeadlessFrame headless;
+        hud::render(headless.list, frame);
+        WOKE_CHECK(headless.vertices_added() == 0);
+    }
+}
+
+// The catalogue's last entry (step 8d). Its settings are ordinary persisted values; the module
+// itself carries no counters and no state machine, so the assertions are about the settings
+// contract: what the GUI pages render and what the config engine persists.
+void test_wind_charge_module() {
+    woke_test::section("step 8d wind charge module");
+
+    mace::WindChargeCd wind;
+    WOKE_CHECK_STR(wind.name(), "Wind Charge CD");
+    WOKE_CHECK(wind.category() == Category::Mace);
+    // colour + hide-when-ready, plus the toggle bind BaseModule registers itself
+    WOKE_CHECK(wind.setting_count() == 3);
+
+    // The colour is an ordinary enum setting; a bad index clamps through the setting's own guard.
+    WOKE_CHECK_STR(wind.settings()[0]->enum_label().data(), "yellow");
+    wind.settings()[0]->set_enum_index(2);
+    WOKE_CHECK(wind.color_index() == 2);
+    wind.settings()[0]->set_enum_index(99);
+    WOKE_CHECK(wind.color_index() == 2); // rejected, unchanged
+
+    // "Hide when ready" defaults on: an idle item must not paint a permanent "100%" chip.
+    WOKE_CHECK(wind.hide_when_ready());
+    wind.settings()[1]->set_bool(false);
+    WOKE_CHECK(!wind.hide_when_ready());
+    wind.settings()[1]->set_bool(true);
+    WOKE_CHECK(wind.hide_when_ready());
+
+    // Enable/disable are stateless - the module is a pure readout.
+    WOKE_CHECK(wind.enable());
+    WOKE_CHECK(wind.enabled());
+    WOKE_CHECK(wind.disable());
+    WOKE_CHECK(!wind.enabled());
+
+    // It registers into the process-wide manager by its display name, the way the frame fill looks
+    // it up, and the overlay wakes for an enabled readout.
+    RegistryGuard guard;
+    WOKE_CHECK(woke::modules::manager().add(&wind));
+    WOKE_CHECK(woke::modules::manager().find("Wind Charge CD") == &wind);
+    WOKE_CHECK(wind.enable());
+    WOKE_CHECK(woke::ui::overlay::wanted());
 }
 
 } // namespace
@@ -359,6 +424,7 @@ void test_combat_mace() {
     test_session_counters();
     test_overlay_policy();
     test_hud_readouts();
+    test_wind_charge_module();
 
     // The registry must be empty when this file returns: every fixture above was stack-owned.
     woke::modules::manager().reset();

@@ -27,6 +27,7 @@ constexpr const char* kGameOptionsClass = "class_315";  // GameOptions
 constexpr const char* kSimpleOptionClass = "class_7172"; // SimpleOption
 constexpr const char* kKeyBindingClass = "class_304";   // KeyBinding
 constexpr const char* kEntityHitResultClass = "class_3966"; // EntityHitResult
+constexpr const char* kItemCooldownManagerClass = "class_1796"; // ItemCooldownManager
 constexpr const char* kTextClass = "class_2561";        // Text
 constexpr const char* kItemStackClass = "class_1799";   // ItemStack
 constexpr const char* kItemClass = "class_1792";        // Item
@@ -105,6 +106,13 @@ struct Handles {
     // Spear reads (roadmap step 8). isUsingRiptide() is the game's own "a riptide is running" flag;
     // the held-item key (above) tells the client which weapon that is.
     jmethodID living_is_using_riptide = nullptr;
+
+    // The item-cooldown read (roadmap step 8: Mace Wind Charge CD). The manager is a per-player
+    // object reached through PlayerEntity.getItemCooldownManager(); the progress method takes the
+    // held stack and the tick delta, and is the same call the vanilla cooldown overlay makes.
+    jmethodID player_get_item_cooldown_manager = nullptr;
+    jmethodID item_cooldown_get_progress = nullptr;
+    jmethodID item_cooldown_is_cooling_down = nullptr;
 };
 
 Handles g_handles{};
@@ -202,6 +210,12 @@ void resolve_handles() noexcept {
     take(g_handles.item_get_translation_key,
         jni::method_of(kItemClass, "getTranslationKey"));
     take(g_handles.living_is_using_riptide, jni::method_of(kLivingClass, "isUsingRiptide"));
+    take(g_handles.player_get_item_cooldown_manager,
+        jni::method_of(kPlayerClass, "getItemCooldownManager"));
+    take(g_handles.item_cooldown_get_progress,
+        jni::method_of(kItemCooldownManagerClass, "getCooldownProgress"));
+    take(g_handles.item_cooldown_is_cooling_down,
+        jni::method_of(kItemCooldownManagerClass, "isCoolingDown"));
 }
 
 // True when the last call left no pending exception. A pending exception would poison every
@@ -1023,6 +1037,49 @@ Maybe<bool> riptide_active() noexcept {
         return missing<bool>();
     }
     return Maybe<bool>::of(active != JNI_FALSE);
+}
+
+// The held item's cooldown progress, through the game's own ItemCooldownManager. The manager is
+// fetched per call rather than cached: it is one virtual call, and caching a game object across
+// dimension changes is exactly the stale-reference bug the facade exists to prevent. progress is
+// getCooldownProgress(stack, tickProgress) with the same 0.0f delta the attack-cooldown read uses
+// - "at the last completed tick", the value the vanilla cooldown overlay draws.
+Maybe<float> held_item_cooldown_progress() noexcept {
+    if (!ready() || g_handles.living_get_main_hand_stack == nullptr
+        || g_handles.player_get_item_cooldown_manager == nullptr
+        || g_handles.item_cooldown_get_progress == nullptr) {
+        return missing<float>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return missing<float>();
+    }
+
+    jobject stack = env->CallObjectMethod(player, g_handles.living_get_main_hand_stack);
+    if (stack == nullptr || !no_pending_exception(env)) {
+        // An empty hand has no cooldown; that is a valid zero, not a failed read.
+        return Maybe<float>::of(1.0f);
+    }
+    jobject manager =
+        env->CallObjectMethod(player, g_handles.player_get_item_cooldown_manager);
+    if (manager == nullptr || !no_pending_exception(env)) {
+        return missing<float>();
+    }
+
+    const jfloat progress =
+        env->CallFloatMethod(manager, g_handles.item_cooldown_get_progress, stack, 0.0f);
+    if (!no_pending_exception(env)) {
+        return missing<float>();
+    }
+    const float value = static_cast<float>(progress);
+    if (value < 0.0f || value > 1.0f) {
+        // The game keeps this in [0,1]; anything else means the read went wrong somewhere.
+        return missing<float>();
+    }
+    return Maybe<float>::of(value);
 }
 
 } // namespace woke::game
