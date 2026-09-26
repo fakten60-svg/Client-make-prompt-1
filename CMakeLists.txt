@@ -30,6 +30,7 @@ set(WOKE_CORE_SOURCES
     src/dllmain.cpp                  # Step 1: loader-lock-safe entry point
     src/core/lifecycle.cpp           # Step 1: single init/teardown owner
     src/core/logger.cpp              # Step 1: console + multi-session file logging
+    src/core/soak.cpp                # Step 9: the soak reporter (Windows-only, game-thread fed)
     src/utils/time_format.cpp        # Step 1: local-timezone timestamp formatting
     src/utils/win32_utils.cpp        # Step 1: paths, console, module resolution
     src/jni/mappings.cpp             # Step 2: mappings.json registry (portable)
@@ -38,7 +39,8 @@ set(WOKE_CORE_SOURCES
     src/modules/module_manager.cpp   # Step 5: module registry, buckets, keybind routing
     src/modules/game_writes.cpp      # Step 7: the recording client-write backend (portable)
     src/modules/client_sound.cpp     # Step 8c: the Client Sound sink storage (portable)
-    src/modules/client_sound_win32.cpp) # Step 8c: the Win32 PlaySound backend (Windows-only)
+    src/modules/client_sound_win32.cpp # Step 8c: the Win32 PlaySound backend (Windows-only)
+    src/core/teardown.cpp)           # Step 9: the hot-unload audit (Windows-only)
 
 # Step 4 builds on the portable half of the UI too: the curves, the animation engine and the theme
 # tokens carry no Windows dependency, so they are compiled by the host tests on Linux as well.
@@ -65,7 +67,9 @@ set(WOKE_UI_WIDGET_SOURCES
     src/ui/notifications.cpp)            # Step 6: the fixed toast pool
 
 set(WOKE_UI_GUI_SOURCES
-    src/ui/gui.cpp)                  # Step 4/5/6: ImGui lifecycle, chrome, widget composition
+    src/ui/gui_chrome.cpp             # Step 4/5/6: theme, layout, widgets, drawing (split, step 9)
+    src/ui/gui_hud.cpp                # Step 7: the in-world overlay composition (split, step 9)
+    src/ui/gui_overlay.cpp)           # Step 4/9: per-frame path, events, lifecycle, public API
 
 if(WIN32)
     include(JavaHeaders)

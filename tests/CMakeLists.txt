@@ -19,6 +19,7 @@ add_executable(woke_tests
     test_step8_modules.cpp                                    # Step 8: bind persistence, dispatch, action modules
     test_combat_mace.cpp                                      # Step 8b: the Combat/Mace readouts
     test_spear_misc.cpp                                       # Step 8c: the Misc/Movement/Spear readouts
+    test_perf.cpp                                             # Step 9: budgets, EMA, §11 gate
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp
@@ -46,9 +47,11 @@ target_include_directories(woke_tests PRIVATE
 # The parser test validates the anchor table against the asset that actually ships. That is
 # what turns "mappings.json is current" from a hope into a build assertion: an upstream
 # rename of MinecraftClient.getInstance or of the client's player/world fields fails CI here
-# instead of surfacing as a mystery in-game failure.
+# instead of surfacing as a mystery in-game failure. The step-9 network-safety scan walks the
+# module tree the same way, so it gets its own path define.
 target_compile_definitions(woke_tests PRIVATE
-    WOKE_MAPPINGS_ASSET="${CMAKE_SOURCE_DIR}/mappings.json")
+    WOKE_MAPPINGS_ASSET="${CMAKE_SOURCE_DIR}/mappings.json"
+    WOKE_MODULES_SOURCE_DIR="${CMAKE_SOURCE_DIR}/src/modules")
 
 # ImGui's core is host-independent, so the draw helpers and the components are rendered headlessly
 # here: the test asserts the draw data ImVec2/ImDrawList code produces, which is the closest a

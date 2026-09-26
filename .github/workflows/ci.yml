@@ -25,6 +25,18 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
+      # §11 review gate, enforced mechanically: module code must never touch the game's network
+      # layer. The client reads and writes client-side state only - no packet synthesis, no
+      # traffic, no chat manipulation. This grep runs on every CI pass so the invariant cannot
+      # erode one "temporary" call at a time.
+      - name: Network-safety grep gate (§11)
+        run: |
+          if grep -rniE 'ClientConnection|sendPacket|PacketByteBufs|networkHandler' src/modules/; then
+            echo '::error::module code references the network layer - §11 forbids packet synthesis'
+            exit 1
+          fi
+          echo '§11 network-safety gate: clean'
+
   # The real artifact: x64 Release woke.dll plus the optional injector helper.
   build-windows:
     name: build (windows x64 release)

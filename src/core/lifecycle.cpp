@@ -7,6 +7,9 @@
 #include "core/event_bus.h"
 #include "core/events.h"
 #include "core/logger.h"
+#include "core/perf.h"
+#include "core/soak.h"
+#include "core/teardown.h"
 #include "core/version.h"
 #include "modules/combat/attack_cooldown.h"
 #include "modules/combat/combat_stats.h"
@@ -224,6 +227,14 @@ bool start_frame_scheduler() noexcept {
     return hooks::game_thread::running();
 }
 
+// Step 9: the soak reporter. Subscribes one TickEvent observer and emits the interval summary
+// line the §12.2 gate is judged by. A failed subscribe is not a boot failure: the client works,
+// it just loses the soak evidence, which is what the WARN inside start_soak() records.
+bool start_soak_step() noexcept {
+    perf::start_soak();
+    return true;
+}
+
 bool start_hook_engine() noexcept {
     return hooks::initialize();
 }
@@ -383,6 +394,8 @@ constexpr Step kBootSteps[] = {
     {"mappings", &start_mappings, 0},
     {"jvm-bridge", &start_jvm_bridge, 1},
     {"event-bus", &start_event_bus, -1},
+    // Step 9: the soak reporter rides the tick stream, so it subscribes after the bus exists.
+    {"soak", &start_soak_step, 3},
     // The scheduler runs before the hook that will drive it, so the very first swap already
     // has a scheduler to hand the frame to.
     {"frame-scheduler", &start_frame_scheduler, 3},
@@ -556,6 +569,7 @@ void shutdown() noexcept {
     // With the swap hook gone nothing can call render_overlay() and with the subclass restored
     // nothing can call handle_window_message(), so the overlay can release its GL objects and its
     // ImGui context without racing the render thread.
+    perf::stop_soak(); // final interval line before the observers it rode are torn down
     ui::shutdown();
     hooks::shutdown();
 
@@ -566,6 +580,28 @@ void shutdown() noexcept {
     jni::unbind_registry();
     jni::shutdown();
 #endif
+
+    // Step 9: verify what the teardown left behind. Runs last, before the logger goes, so the
+    // audit lines are in the same session file as the boot that is being audited.
+    {
+        std::size_t handlers = 0;
+        handlers += woke::events::bus().handler_count<events::FrameEvent>();
+        handlers += woke::events::bus().handler_count<events::TickEvent>();
+        handlers += woke::events::bus().handler_count<events::KeyEvent>();
+        handlers += woke::events::bus().handler_count<events::MouseEvent>();
+        handlers += woke::events::bus().handler_count<events::FocusEvent>();
+        handlers += woke::events::bus().handler_count<events::WorldChangeEvent>();
+        handlers += woke::events::bus().handler_count<events::PlayerChangeEvent>();
+        handlers += woke::events::bus().handler_count<events::ConfigLoadedEvent>();
+        handlers += woke::events::bus().handler_count<events::ShutdownEvent>();
+        perf::TeardownFinding findings[8];
+        const std::size_t count = perf::verify_teardown(
+            findings, sizeof(findings) / sizeof(findings[0]), handlers);
+        if (count > sizeof(findings) / sizeof(findings[0])) {
+            WOKE_LOG_WARN("teardown AUDIT: %zu finding(s) did not fit the report buffer",
+                count - sizeof(findings) / sizeof(findings[0]));
+        }
+    }
 
     woke::logger::shutdown();
 }
