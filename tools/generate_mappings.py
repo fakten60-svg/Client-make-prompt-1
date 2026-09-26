@@ -74,6 +74,9 @@ CURATED_CLASSES = [
     "net/minecraft/util/Hand",
     "net/minecraft/item/ItemStack",
     "net/minecraft/item/Item",
+    # cooldowns (Mace Wind Charge CD, roadmap step 8d) - the thrown-item timers live on the
+    # player's ItemCooldownManager
+    "net/minecraft/entity/player/ItemCooldownManager",
     # text / formatting
     "net/minecraft/text/Text",
     "net/minecraft/util/Formatting",

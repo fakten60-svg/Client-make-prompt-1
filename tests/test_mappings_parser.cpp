@@ -207,7 +207,7 @@ void test_mappings_parser() {
         WOKE_CHECK(mappings.load_file(WOKE_MAPPINGS_ASSET));
         WOKE_CHECK(mappings.loaded());
         WOKE_CHECK_STR(mappings.version().c_str(), "1.21.11");
-        WOKE_CHECK(mappings.class_count() == 39);
+        WOKE_CHECK(mappings.class_count() == 40); // 8d added ItemCooldownManager
         WOKE_CHECK(mappings.method_count() > 2000);
         WOKE_CHECK(mappings.field_count() > 1000);
 

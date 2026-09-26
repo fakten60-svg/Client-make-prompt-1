@@ -17,6 +17,7 @@
 #include "modules/mace/mace_stats.h"
 #include "modules/mace/smash_flash.h"
 #include "modules/mace/smash_potential.h"
+#include "modules/mace/wind_charge_cd.h"
 #include "modules/misc/client_sound.h"
 #include "modules/misc/friend_manager.h"
 #include "modules/misc/clickgui.h"
@@ -85,6 +86,8 @@ woke::modules::combat::CombatStats g_combat_stats_module;
 woke::modules::mace::SmashPotential g_smash_potential_module;
 woke::modules::mace::MaceStats g_mace_stats_module;
 woke::modules::mace::SmashFlash g_smash_flash_module;
+// Step 8d: the catalogue's last open entry, over the mapping asset's ItemCooldownManager.
+woke::modules::mace::WindChargeCd g_wind_charge_cd_module;
 // Step 8c: Misc, Movement and the Spear set.
 woke::modules::misc::FriendManager g_friend_manager_module;
 woke::modules::misc::ClientSound g_client_sound_module;
@@ -334,6 +337,7 @@ bool start_modules() noexcept {
         && registry.add(&g_attack_cooldown_module) && registry.add(&g_reach_display_module)
         && registry.add(&g_combat_stats_module) && registry.add(&g_smash_potential_module)
         && registry.add(&g_mace_stats_module) && registry.add(&g_smash_flash_module)
+        && registry.add(&g_wind_charge_cd_module)
         && registry.add(&g_friend_manager_module) && registry.add(&g_client_sound_module)
         && registry.add(&g_safe_walk_module) && registry.add(&g_riptide_module)
         && registry.add(&g_trident_module) && registry.add(&g_loyalty_module);

@@ -32,8 +32,8 @@ end of this document are the historical record written while steps 3–5 were la
 | 7 — visual modules | landed |
 | 8a — bind persistence, key dispatch, action modules | landed |
 | 8b — Combat + Mace readouts (7 modules) | landed |
-| 8c — Friend Manager, Client Sound, Safe Walk, Spear set (6 modules) | **in review** |
-| 8d — Wind Charge CD (blocked on an ItemCooldownManager mapping) | **next gate** |
+| 8c — Friend Manager, Client Sound, Safe Walk, Spear set (6 modules) | landed |
+| 8d — Wind Charge CD (the catalogue's last entry) | landed |
 
 **Step 7 — visual modules.** Fullbright, HUD (watermark + arraylist), Zoom, Trajectories and Custom
 Crosshair are registered in `lifecycle.cpp` and render through `ui/hud.cpp`; the portable write seam
@@ -52,11 +52,14 @@ Win32 `PlaySound` backend), Movement's Safe Walk (which holds the game's *own* s
 same write seam Auto Sprint uses, so vanilla edge protection does the work) and the Spear set
 (Riptide Indicator from the game's `isUsingRiptide` flag, Trident Cooldown from the trident's own
 swing charge while a trident is held, and Loyalty HUD as a client-observed throw/return timer).
-
-**The one catalogue entry still open** is Mace's Wind Charge CD. Minecraft keeps the thrown-item
-cooldown on an `ItemCooldownManager` the curated mapping asset does not currently expose, and this
-client does not guess at a duration it cannot read, so the module is deferred until the asset is
-regenerated with that class rather than shipped as a number the game never agreed to.
+Sub-round 8d completes the catalogue with Mace's Wind Charge CD: the mapping asset was regenerated
+from the same Yarn build to add `ItemCooldownManager` (`class_1796`), and the chip reads the held
+item's own cooldown through `PlayerEntity.getItemCooldownManager()` →
+`getCooldownProgress(stack, tickProgress)` — the exact number the vanilla cooldown overlay ticks —
+so the timer shown is the game's own answer, never a client-side guess at its duration. The chip
+draws only while a cooldown is running (progress < 1), with a persisted "hide when ready" setting,
+and an unavailable read degrades to "no chip", never to a wrong figure. No catalogue entry remains
+open.
 
 **Step 6 — widget library.** `ui/components/{keybind_badge,module_card,sidebar,search_bar}`,
 `ui/notifications` (fixed 8-slot toast pool), and `pill_toggle`/`traffic_lights` reworked onto the
