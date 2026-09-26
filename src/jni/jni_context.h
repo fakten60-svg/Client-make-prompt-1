@@ -13,6 +13,7 @@
 
 #include <jni.h>
 #include <cstddef>
+#include <cstdint>
 
 namespace woke::jni {
 
@@ -41,6 +42,21 @@ void shutdown() noexcept;
 void detach_current_thread() noexcept;
 
 [[nodiscard]] std::size_t attached_thread_count() noexcept;
+
+// ── Local-reference bookkeeping (roadmap step 9, risk R-06) ──────────────────────────
+//
+// The soak gate is "no local-ref leaks (log line)". A ScopedLocalFrame that failed to push
+// leaks every local its scope creates, and a pop that fails drops the frame it was supposed
+// to release, so both are counted here and reported by the soak instrumentation. The counters
+// are the *failures* - a frame that pushes and pops cleanly moves none of them - so a session
+// total of zero is the pass condition, not a growing number to subtract.
+struct LocalFrameStats {
+    std::uint64_t pushed = 0;   // frames that pushed successfully
+    std::uint64_t push_failed = 0;  // PushLocalFrame failed: scope leaks its locals
+    std::uint64_t pop_failed = 0;   // PopLocalFrame failed: the frame was never released
+};
+
+[[nodiscard]] LocalFrameStats local_frame_stats() noexcept;
 
 // RAII local-reference frame.
 //

@@ -19,6 +19,10 @@ JavaVM* g_vm = nullptr;
 bool g_lookup_done = false;
 std::size_t g_attached_threads = 0;
 
+// ScopedLocalFrame bookkeeping (step 9, R-06). Plain integers incremented on the owning
+// thread; the soak line reads them once a minute, and a torn read on a counter is harmless.
+LocalFrameStats g_local_frames{};
+
 thread_local JNIEnv* t_env = nullptr;
 thread_local bool t_attached_by_us = false;
 
@@ -192,7 +196,10 @@ ScopedLocalFrame::ScopedLocalFrame(jint capacity) noexcept {
         return;
     }
     pushed_ = (env_->PushLocalFrame(capacity) == JNI_OK);
-    if (!pushed_) {
+    if (pushed_) {
+        ++g_local_frames.pushed;
+    } else {
+        ++g_local_frames.push_failed;
         // A missing frame is a performance and leak concern, not a correctness one: JNI
         // still allocates the references, they are just not released as a block.
         WOKE_LOG_WARN("jvm: PushLocalFrame(%d) failed - continuing without a local frame",
@@ -202,8 +209,15 @@ ScopedLocalFrame::ScopedLocalFrame(jint capacity) noexcept {
 
 ScopedLocalFrame::~ScopedLocalFrame() noexcept {
     if (pushed_ && env_ != nullptr) {
-        (void)env_->PopLocalFrame(nullptr);
+        if (env_->PopLocalFrame(nullptr) != JNI_OK) {
+            ++g_local_frames.pop_failed;
+            WOKE_LOG_WARN("jvm: PopLocalFrame failed - a local-reference frame was leaked");
+        }
     }
+}
+
+LocalFrameStats local_frame_stats() noexcept {
+    return g_local_frames;
 }
 
 } // namespace woke::jni

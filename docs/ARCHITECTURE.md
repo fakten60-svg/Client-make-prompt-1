@@ -34,6 +34,7 @@ end of this document are the historical record written while steps 3–5 were la
 | 8b — Combat + Mace readouts (7 modules) | landed |
 | 8c — Friend Manager, Client Sound, Safe Walk, Spear set (6 modules) | landed |
 | 8d — Wind Charge CD (the catalogue's last entry) | landed |
+| 9 — Perf + hardening (soak reporter, teardown audit, gui split) | **in review** |
 
 **Step 7 — visual modules.** Fullbright, HUD (watermark + arraylist), Zoom, Trajectories and Custom
 Crosshair are registered in `lifecycle.cpp` and render through `ui/hud.cpp`; the portable write seam
@@ -60,6 +61,23 @@ so the timer shown is the game's own answer, never a client-side guess at its du
 draws only while a cooldown is running (progress < 1), with a persisted "hide when ready" setting,
 and an unavailable read degrades to "no chip", never to a wrong figure. No catalogue entry remains
 open.
+
+**Step 9 — perf + hardening.** The gui.cpp problem is fixed permanently: the 1200-line file and
+its included fragment are split into `gui_internal.h` + `gui_chrome.cpp` (static composition:
+timing, theme, readouts, layout, widget interaction, drawing) + `gui_hud.cpp` (the in-world
+overlay) + `gui_overlay.cpp` (per-frame path, events, lifecycle, public API), each under the
+§11 size limit, and the old files are gone. The §12.2 step-9 gate now has its evidence producer:
+`core/soak.cpp` emits one `soak:` log line per 60 s interval with the chrome/pipeline averages and
+worst cases (judged by `core/perf.h`'s budgets — one definition each, with a `static_assert`
+keeping the chrome's 0.2 ms share inside the pipeline's 0.5 ms), the suppression ratio, and the
+ScopedLocalFrame failure counters (risk R-06), which `jni_context` now tracks per push/pop.
+`core/teardown.cpp` closes the hot-unload loop: after `shutdown()` reverses boot, one audit reads
+each system's own accessors and reports residue (subscriptions left on the bus, hooks installed,
+scheduler running, ImGui context alive, cached game refs) as `teardown AUDIT:` lines, so an
+inject/eject-×20 transcript is grep-able for findings. The §11 network-safety rule gained a CI
+enforcement step (grep gate over `src/modules/`) plus a host-test mirror, and the EMA seam both
+perf meters smooth through is extracted and unit-tested (seed rule, fold rate, NaN/negative
+refusal). Host tests live in `tests/test_perf.cpp`.
 
 **Step 6 — widget library.** `ui/components/{keybind_badge,module_card,sidebar,search_bar}`,
 `ui/notifications` (fixed 8-slot toast pool), and `pill_toggle`/`traffic_lights` reworked onto the

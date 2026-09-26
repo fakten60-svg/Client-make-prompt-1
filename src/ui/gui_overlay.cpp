@@ -1,149 +1,60 @@
-// ── In-world overlay (blueprint §7.6, roadmap step 7) ────────────────────────────
+#include "ui/gui_internal.h"
 
-using modules::visual::CustomCrosshair;
-using modules::visual::HudModule;
-using modules::movement::VelocityDisplay;
-using modules::visual::Trajectories;
+#include <windows.h>
 
-// The in-world overlay modules, resolved by name and re-resolved only when the registry size
-// changes. Cached because the draw path asks about them every frame, and a name lookup per frame
-// would be thirty-odd string compares for a fact that changes at most once per click.
-struct OverlayModules {
-    const HudModule* hud = nullptr;
-    const CustomCrosshair* crosshair = nullptr;
-    const Trajectories* trajectories = nullptr;
-    const VelocityDisplay* velocity = nullptr;
-    std::size_t resolved_count = static_cast<std::size_t>(-1);
-};
+#include <cstddef>
+#include <cstdint>
 
-OverlayModules g_overlay{};
+#include <imgui.h>
+#include <imgui_impl_opengl3.h>
+#include <imgui_impl_win32.h>
 
-void resolve_overlay_modules() noexcept {
-    const std::size_t count = modules::manager().count();
-    if (count == g_overlay.resolved_count) {
-        return;
-    }
-    g_overlay.resolved_count = count;
-    // dynamic_cast, not static_cast: the lookup is by name, so the cast is only sound while that
-    // name still maps to the type it claims to. A future name collision becomes a null pointer - a
-    // silent overlay that does not draw - instead of undefined behaviour.
-    g_overlay.hud = dynamic_cast<const HudModule*>(modules::manager().find("HUD"));
-    g_overlay.crosshair =
-        dynamic_cast<const CustomCrosshair*>(modules::manager().find("Custom Crosshair"));
-    g_overlay.trajectories =
-        dynamic_cast<const Trajectories*>(modules::manager().find("Trajectories"));
-    g_overlay.velocity =
-        dynamic_cast<const VelocityDisplay*>(modules::manager().find("Velocity Display"));
-}
+#include "core/build_config.h"
+#include "core/config.h"
+#include "core/event_bus.h"
+#include "core/events.h"
+#include "core/logger.h"
+#include "core/perf.h"
+#include "core/version.h"
+#include "hooks/game_thread.h"
+#include "modules/module_manager.h"
+#include "ui/notifications.h"
+#include "ui/step8_frame.h"
 
-// True when an enabled overlay module would draw. ui::needs_render() consults this so an enabled
-// HUD keeps the frame pipeline alive with the chrome hidden (§7.6, §7.8). The policy itself lives
-// in overlay.cpp - portable, host-tested, and the same predicate the frame scheduler's flag reads -
-// so this composition only asks instead of keeping a second copy of the rules.
-bool inworld_overlay_wanted() noexcept {
-    return overlay::wanted();
-}
+// The overlay's per-frame path, its events and its lifecycle (blueprint §7.1, §7.8), plus the
+// public ui/ API from gui.h. The static composition lives in gui_chrome.cpp and the in-world
+// overlay in gui_hud.cpp; gui_internal.h is the contract between the three.
 
-// The live player view for the trajectory prediction. Read only when a path is actually going to
-// be drawn: four JNI calls per frame for a hidden overlay would be pure waste.
-void read_player_view(hud::Frame& frame) noexcept {
-#if WOKE_HAVE_JNI
-    const auto eye = game::player_eye_position();
-    const auto yaw = game::player_yaw();
-    const auto pitch = game::player_pitch();
-    const auto velocity = game::player_velocity();
-    if (!eye.valid || !yaw.valid || !pitch.valid) {
-        return;
-    }
-    frame.world_live = true;
-    frame.eye = eye.value;
-    frame.yaw_degrees = yaw.value;
-    frame.pitch_degrees = pitch.value;
-    if (velocity.valid) {
-        frame.velocity = velocity.value;
-    }
-#else
-    (void)frame;
-#endif
-}
+// ImGui's Win32 backend deliberately leaves its message handler commented out in its header (it
+// does not want to pull <windows.h> into the helper), and expects the application to forward
+// declare it - this is the declaration the upstream Win32 example uses. It must stay at global
+// scope: the definition in imgui_impl_win32.cpp is not namespaced.
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
 
-void build_hud_frame(hud::Frame& frame) noexcept {
-    resolve_overlay_modules();
-    const ImGuiIO& io = ImGui::GetIO();
-    frame.screen = Rect{0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y};
-    frame.frames_per_second = hooks::game_thread::stats().frames_per_second;
-    frame.alpha = 1.0f;
-    // The frame's own delta: the Loyalty HUD's throw timer advances on this, so it follows the real
-    // frame rate instead of assuming one (§7.4).
-    frame.delta_seconds = io.DeltaTime;
+namespace woke::ui {
+namespace detail {
+namespace {
 
-    if (g_overlay.hud != nullptr && g_overlay.hud->enabled()) {
-        frame.watermark = g_overlay.hud->watermark();
-        frame.arraylist = g_overlay.hud->arraylist();
-        frame.arraylist_by_length = g_overlay.hud->sort_by_length();
-    }
+// ── Lazy renderer initialisation ──────────────────────────────────────────────────
 
-    if (g_overlay.crosshair != nullptr && g_overlay.crosshair->enabled()) {
-        frame.crosshair = true;
-        frame.crosshair_style.shape = g_overlay.crosshair->shape();
-        frame.crosshair_style.size = g_overlay.crosshair->size();
-        frame.crosshair_style.gap = g_overlay.crosshair->gap();
-        frame.crosshair_style.thickness = g_overlay.crosshair->thickness();
-        frame.crosshair_style.color =
-            CustomCrosshair::color_for(g_overlay.crosshair->color_index());
-    }
+// (Declared in gui_internal.h, defined here: the backends are this file's business because it
+// owns the ImGui context lifecycle that initialises them.)
 
-    if (g_overlay.velocity != nullptr && g_overlay.velocity->enabled()) {
-        frame.velocity_chip = true;
-        frame.velocity_units = g_overlay.velocity->units_index();
-        read_player_view(frame);
-    }
-
-    if (g_overlay.trajectories != nullptr && g_overlay.trajectories->enabled()) {
-        frame.trajectory = true;
-        frame.trajectory_style.params = g_overlay.trajectories->params();
-        frame.trajectory_style.color =
-            Trajectories::color_for(g_overlay.trajectories->color_index());
-        read_player_view(frame);
-    }
-
-    // Step 8: the Combat/Mace readouts. Filled last so the modules that share the left-hand chip
-    // column (reach, smash, counters) read the same frame the step-7 fields already populated.
-    fill_step8_readouts(frame);
-}
-
-// Drawn after the chrome, so the HUD, crosshair and path sit above the game. It yields while the
-// ClickGUI is open: the chrome is the focus then, and a crosshair drawn at its centre would
-// otherwise land on top of the module cards.
-void render_inworld_overlay() noexcept {
-    if (util::clamp01(g_state.animation.value(g_state.open_spring)) > 0.001f) {
-        return;
-    }
-    hud::Frame frame{};
-    build_hud_frame(frame);
-    if (!hud::active(frame)) {
-        return;
-    }
-    hud::render(ImGui::GetForegroundDrawList(), frame);
-}
-
-// Mirrors an overlay-side visibility change (the red traffic light, focus loss) onto the ClickGUI
-// module, so its card's pill can never disagree with the window (§6, ModuleCard's invariant).
-void sync_clickgui_module() noexcept {
-    modules::BaseModule* module = modules::manager().find("ClickGUI");
-    if (module != nullptr && module->enabled() != g_state.visible) {
-        module->set_enabled(g_state.visible);
-        modules::manager().notify_changed();
-    }
-}
+// ── The compose pass ──────────────────────────────────────────────────────────────
+//
+// The ClickGUI chrome for one frame: input top-down, then the window. Split out of the old
+// render_overlay so the budget meter in render_overlay measures exactly the composition and
+// nothing else.
 
 void compose_frame() noexcept {
-    const float open = util::clamp01(g_state.animation.value(g_state.open_spring));
-    const float collapse = util::clamp01(g_state.animation.value(g_state.collapse));
+    State& s = state();
+    const float open = util::clamp01(s.animation.value(s.open_spring));
+    const float collapse = util::clamp01(s.animation.value(s.collapse));
 
     // While the chrome is fully closed, only the toast stack may still need this frame (§7.8):
     // composing the window at alpha 0 would still emit every piece of geometry it owns.
-    if (!g_state.visible && open <= 0.001f) {
+    if (!s.visible && open <= 0.001f) {
         render_notifications_layer();
         return;
     }
@@ -153,50 +64,50 @@ void compose_frame() noexcept {
     const ImGuiIO& io = ImGui::GetIO();
     const Rect screen{0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y};
 
-    g_state.header = layout.header;
-    g_state.density_button = Rect{layout.header.right() - kDensityButtonWidth - 16.0f,
+    s.header = layout.header;
+    s.density_button = Rect{layout.header.right() - kDensityButtonWidth - 16.0f,
         layout.header.center_y() - (kDensityButtonHeight * 0.5f), kDensityButtonWidth,
         kDensityButtonHeight};
 
     // ── Input phase, top-down (§7.3). Toasts are drawn last, so they are offered the click
     // first; then the chrome, the sidebar, the search field and finally the content pane.
-    g_state.notifications.set_screen(screen);
-    (void)g_state.notifications.handle_input(g_state.input);
+    s.notifications.set_screen(screen);
+    (void)s.notifications.handle_input(s.input);
     handle_lights(layout);
     handle_density_button();
 
     if (collapse < 0.999f) {
         sync_sidebar();
-        g_state.sidebar.set_area(layout.rail);
-        g_state.sidebar.set_alpha(alpha);
-        (void)g_state.sidebar.handle_input(g_state.input);
-        if (g_state.sidebar.take_selection_changed()) {
-            g_state.selected = g_state.sidebar.selected();
+        s.sidebar.set_area(layout.rail);
+        s.sidebar.set_alpha(alpha);
+        (void)s.sidebar.handle_input(s.input);
+        if (s.sidebar.take_selection_changed()) {
+            s.selected = s.sidebar.selected();
             // Leaving a page closes its drawer and disarms its capture: both belong to a card that
             // is no longer on screen.
-            g_state.expanded_module = nullptr;
-            g_state.capture_index = -1;
-            g_state.slider_drag = nullptr;
-            g_state.list_dirty = true;
+            s.expanded_module = nullptr;
+            s.capture_index = -1;
+            s.slider_drag = nullptr;
+            s.list_dirty = true;
         }
 
-        g_state.search.set_area(search_field_rect(layout.content));
-        g_state.search.set_alpha(alpha);
-        (void)g_state.search.handle_input(g_state.input);
-        if (g_state.search.take_changed()) {
-            g_state.list_dirty = true;
+        s.search.set_area(search_field_rect(layout.content));
+        s.search.set_alpha(alpha);
+        (void)s.search.handle_input(s.input);
+        if (s.search.take_changed()) {
+            s.list_dirty = true;
         }
         // The registry only changes at boot in this step, but the check is what keeps a future
         // dynamic registration from showing a stale list.
-        if (modules::manager().count() != g_state.cached_module_count) {
-            g_state.cached_module_count = modules::manager().count();
-            g_state.list_dirty = true;
+        if (modules::manager().count() != s.cached_module_count) {
+            s.cached_module_count = modules::manager().count();
+            s.list_dirty = true;
         }
-        if (g_state.list_dirty) {
+        if (s.list_dirty) {
             recompute_visible_modules();
         }
 
-        if (is_module_category(g_state.selected)) {
+        if (is_module_category(s.selected)) {
             handle_module_cards(card_pane(layout.content), alpha);
             handle_settings_rows();
         }
@@ -205,9 +116,9 @@ void compose_frame() noexcept {
 
     // Component animate() only steers targets; the controller was ticked for this frame already,
     // and the GUI owns the single tick per frame (§7.4).
-    g_state.sidebar.animate(0.0f);
-    g_state.search.animate(0.0f);
-    for (ModuleCard& card : g_state.cards) {
+    s.sidebar.animate(0.0f);
+    s.search.animate(0.0f);
+    for (ModuleCard& card : s.cards) {
         card.animate(0.0f);
     }
 
@@ -236,7 +147,7 @@ void compose_frame() noexcept {
     if (drawable) {
         draw::border_stroke(draw_list, layout.window, theme::color::kWindowBorder,
             theme::metrics::kWindowRounding, theme::metrics::kWindowBorderSize);
-        g_state.sidebar.render(draw_list, layout.rail);
+        s.sidebar.render(draw_list, layout.rail);
         draw_content(draw_list, layout, collapse);
         draw_chrome_bar(draw_list, layout, collapse);
     }
@@ -253,6 +164,7 @@ void compose_frame() noexcept {
 // pointer-to-noexcept-function argument for a plain function-pointer parameter is a conformance
 // area worth not depending on.
 void on_key_event(events::KeyEvent& event) {
+    State& s = state();
     if (!event.down) {
         return;
     }
@@ -260,20 +172,20 @@ void on_key_event(events::KeyEvent& event) {
     // An armed bind capture has priority over everything else: the next key is the user's new
     // bind, not a game input and not a module toggle. A repeat cannot re-arm anything, because the
     // first key-down already consumed the capture.
-    if (g_state.capture_index >= 0) {
+    if (s.capture_index >= 0) {
         event.consumed = true;
         if (event.repeat) {
             return;
         }
-        const std::size_t index = static_cast<std::size_t>(g_state.capture_index);
-        g_state.capture_index = -1;
+        const std::size_t index = static_cast<std::size_t>(s.capture_index);
+        s.capture_index = -1;
         modules::BaseModule* module =
             index < modules::manager().count() ? modules::manager().at(index) : nullptr;
         if (module == nullptr) {
             return;
         }
 
-        auto& badge = g_state.cards[index].badge();
+        auto& badge = s.cards[index].badge();
         const int previous = badge.bind_key();
         if (!badge.accept_key(event.virtual_key)) {
             return;
@@ -295,7 +207,7 @@ void on_key_event(events::KeyEvent& event) {
         return;
     }
 
-    if (event.repeat || event.virtual_key != g_state.toggle_key) {
+    if (event.repeat || event.virtual_key != s.toggle_key) {
         return;
     }
     toggle();
@@ -304,7 +216,7 @@ void on_key_event(events::KeyEvent& event) {
 }
 
 void on_focus_event(events::FocusEvent& event) {
-    if (event.focused || !g_state.visible) {
+    if (event.focused || !state().visible) {
         return;
     }
     // macOS behaviour (§4.7): losing the window closes the ClickGUI. The red button and this share
@@ -314,110 +226,172 @@ void on_focus_event(events::FocusEvent& event) {
 }
 
 } // namespace
+} // namespace detail
+
+// The public API below implements gui.h against the composition's shared state, so the detail
+// names come in here once rather than qualifying every use. ensure_renderer is deliberately
+// *not* pulled in by name: it is defined in this file, and a using-directive would make the
+// definition and the declaration collide.
+using namespace detail;
+using detail::state;
+using detail::State;
+
+// ── Lazy renderer initialisation (owns the ImGui context) ─────────────────────────
+
+bool ensure_renderer() noexcept {
+    State& s = state();
+    if (s.renderer_ready) {
+        return true;
+    }
+    if (s.renderer_failed) {
+        return false;
+    }
+    if (s.context == nullptr) {
+        return false;
+    }
+    if (s.window == nullptr) {
+        // Normal early state: the DLL can be injected before the WndProc hook has found the game
+        // window. Nothing is logged per frame - the boot log already says input is unavailable.
+        return false;
+    }
+
+    ImGui::SetCurrentContext(s.context);
+
+    // The Win32 backend in its OpenGL flavour (monitor DPI + cursor handling for a GL window), and
+    // then the GL3 backend. This runs inside the swap detour, where the game's GL context is
+    // current by definition - the one place a GL initialisation is guaranteed to be valid.
+    if (!ImGui_ImplWin32_InitForOpenGL(s.window)) {
+        s.renderer_failed = true;
+        WOKE_LOG_ERROR("gui-renderer: the ImGui Win32 backend could not attach to window %p",
+            static_cast<void*>(s.window));
+        return false;
+    }
+    if (!ImGui_ImplOpenGL3_Init(nullptr)) {
+        ImGui_ImplWin32_Shutdown();
+        s.renderer_failed = true;
+        WOKE_LOG_ERROR("gui-renderer: the ImGui OpenGL3 backend could not initialise");
+        return false;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    // The game owns the OS cursor while it has raw input, so the overlay draws its own. Without
+    // this the ClickGUI would be unusable in a captured window.
+    io.MouseDrawCursor = true;
+
+    s.renderer_ready = true;
+    WOKE_LOG_INFO("gui-renderer: ImGui %s ready on window %p (win32 + opengl3)", IMGUI_VERSION,
+        static_cast<void*>(s.window));
+    return true;
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────────
 
 bool initialize() noexcept {
-    if (g_state.initialized) {
+    State& s = state();
+    if (s.initialized) {
         return true;
     }
 
-    (void)::QueryPerformanceFrequency(&g_state.frequency);
-    g_state.toggle_key = kDefaultToggleKey;
-    g_state.selected = Section::Diagnostics;
-    g_state.grid_layout = true;
+    (void)::QueryPerformanceFrequency(&s.frequency);
+    s.toggle_key = kDefaultToggleKey;
+    s.selected = Section::Diagnostics;
+    s.grid_layout = true;
 
-    g_state.animation.reset();
-    g_state.open_spring = g_state.animation.acquire_spring(0.0f);
-    g_state.collapse = g_state.animation.acquire_state(0.0f, 12.0f);
-    g_state.density = g_state.animation.acquire_state(0.0f, 16.0f);
+    s.animation.reset();
+    s.open_spring = s.animation.acquire_spring(0.0f);
+    s.collapse = s.animation.acquire_state(0.0f, 12.0f);
+    s.density = s.animation.acquire_state(0.0f, 16.0f);
 
     // Step 6: the widget library acquires every animation slot it will ever use here, once
     // (§7.4). A component handed a handle at boot cannot animate from a recycled one, and no
     // frame ever allocates a widget or a slot (§6.3). A ModuleCard owns five states (its hover,
     // its drawer reveal, the pill's t, and the badge's hover and capture pulse), which is what
     // sizes AnimationController::kMaxStates.
-    g_state.lights.bind(g_state.animation);
-    g_state.sidebar.bind(g_state.animation);
-    g_state.search.bind(g_state.animation);
-    g_state.notifications.bind(g_state.animation);
-    for (ModuleCard& card : g_state.cards) {
-        card.bind(g_state.animation);
+    s.lights.bind(s.animation);
+    s.sidebar.bind(s.animation);
+    s.search.bind(s.animation);
+    s.notifications.bind(s.animation);
+    for (ModuleCard& card : s.cards) {
+        card.bind(s.animation);
     }
 
-    g_state.context = ImGui::CreateContext();
-    if (g_state.context == nullptr) {
+    s.context = ImGui::CreateContext();
+    if (s.context == nullptr) {
         WOKE_LOG_ERROR("gui: ImGui context creation failed - the ClickGUI stays disabled");
         return false;
     }
-    ImGui::SetCurrentContext(g_state.context);
+    ImGui::SetCurrentContext(s.context);
     apply_imgui_style();
 
-    g_state.key_subscription = events::bus().subscribe<events::KeyEvent, &on_key_event>();
-    g_state.focus_subscription = events::bus().subscribe<events::FocusEvent, &on_focus_event>();
+    s.key_subscription = events::bus().subscribe<events::KeyEvent, &on_key_event>();
+    s.focus_subscription = events::bus().subscribe<events::FocusEvent, &on_focus_event>();
 
-    g_state.initialized = true;
+    s.initialized = true;
     WOKE_LOG_INFO("ui-theme: %zu sections, ImGui %s, toggle key 0x%02X", kSectionCount,
-        IMGUI_VERSION, static_cast<unsigned int>(g_state.toggle_key));
+        IMGUI_VERSION, static_cast<unsigned int>(s.toggle_key));
     return true;
 }
 
 void shutdown() noexcept {
-    if (!g_state.initialized) {
+    State& s = state();
+    if (!s.initialized) {
         return;
     }
 
-    if (g_state.renderer_ready) {
-        ImGui::SetCurrentContext(g_state.context);
+    if (s.renderer_ready) {
+        ImGui::SetCurrentContext(s.context);
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplWin32_Shutdown();
-        g_state.renderer_ready = false;
+        s.renderer_ready = false;
     }
 
-    events::bus().unsubscribe(g_state.key_subscription);
-    events::bus().unsubscribe(g_state.focus_subscription);
-    g_state.key_subscription = events::Subscription{};
-    g_state.focus_subscription = events::Subscription{};
+    events::bus().unsubscribe(s.key_subscription);
+    events::bus().unsubscribe(s.focus_subscription);
+    s.key_subscription = events::Subscription{};
+    s.focus_subscription = events::Subscription{};
     // The step-8 counter observer holds a bus slot of its own; released here so a hot unload can
     // never leave the bus calling into unmapped DLL code.
     shutdown_step8();
 
     // Reverse of initialize()'s bind order: every component returns its pooled slots, so a
     // re-injection (hot unload, then attach again) starts from a clean controller.
-    for (ModuleCard& card : g_state.cards) {
+    for (ModuleCard& card : s.cards) {
         card.unbind();
     }
-    g_state.notifications.unbind();
-    g_state.search.unbind();
-    g_state.sidebar.unbind();
-    g_state.lights.unbind();
+    s.notifications.unbind();
+    s.search.unbind();
+    s.sidebar.unbind();
+    s.lights.unbind();
 
-    if (g_state.context != nullptr) {
-        ImGui::SetCurrentContext(g_state.context);
-        ImGui::DestroyContext(g_state.context);
-        g_state.context = nullptr;
+    if (s.context != nullptr) {
+        ImGui::SetCurrentContext(s.context);
+        ImGui::DestroyContext(s.context);
+        s.context = nullptr;
     }
 
     hooks::game_thread::set_overlay_requested(false);
-    WOKE_LOG_INFO("gui: shutdown (%zu frame(s) rendered, %zu suppressed)", g_state.frames_rendered,
-        g_state.suppressed_frames);
-    g_state.initialized = false;
+    WOKE_LOG_INFO("gui: shutdown (%zu frame(s) rendered, %zu suppressed)", s.frames_rendered,
+        s.suppressed_frames);
+    s.initialized = false;
 }
 
 void attach_window(void* hwnd) noexcept {
-    g_state.window = static_cast<HWND>(hwnd);
-    if (g_state.window != nullptr) {
-        g_state.window_positioned = false;
+    State& s = state();
+    s.window = static_cast<HWND>(hwnd);
+    if (s.window != nullptr) {
+        s.window_positioned = false;
     }
 }
 
 bool handle_window_message(
     void* hwnd, unsigned int message, unsigned long long wparam, long long lparam) noexcept {
-    if (!g_state.initialized || g_state.context == nullptr || !g_state.visible) {
+    State& s = state();
+    if (!s.initialized || s.context == nullptr || !s.visible) {
         return false;
     }
 
-    ImGui::SetCurrentContext(g_state.context);
+    ImGui::SetCurrentContext(s.context);
     (void)ImGui_ImplWin32_WndProcHandler(static_cast<HWND>(hwnd), message,
         static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam));
 
@@ -434,7 +408,9 @@ bool handle_window_message(
     case WM_MBUTTONDOWN:
     case WM_MBUTTONUP:
     case WM_MOUSEWHEEL:
+#if _WIN32_WINNT >= 0x0600
     case WM_MOUSEHWHEEL:
+#endif
         // Clicks and wheel are the GUI's while it is visible; the game must not mine, attack or
         // change hotbar slots behind it.
         return true;
@@ -444,7 +420,7 @@ bool handle_window_message(
     case WM_SYSKEYDOWN:
     case WM_SYSKEYUP:
         // The toggle bind has to reach the event bus, which is what closes the GUI again.
-        return static_cast<int>(wparam) != g_state.toggle_key;
+        return static_cast<int>(wparam) != s.toggle_key;
 
     case WM_CHAR:
     case WM_SYSCHAR:
@@ -456,20 +432,21 @@ bool handle_window_message(
 }
 
 void render_overlay() noexcept {
-    if (!g_state.initialized) {
+    State& s = state();
+    if (!s.initialized) {
         return;
     }
 
     // §7.8. While hidden and settled this is the entire cost of a frame: one branch. No NewFrame,
     // no vertex generation, no draw-list traversal.
     if (!needs_render()) {
-        ++g_state.suppressed_frames;
-        if (!g_state.suppression_logged) {
-            g_state.suppression_logged = true;
+        ++s.suppressed_frames;
+        if (!s.suppression_logged) {
+            s.suppression_logged = true;
             WOKE_LOG_INFO(
                 "gui-renderer: chrome hidden after %zu frame(s) - frames now return before ImGui "
                 "(%zu suppressed total, zero draw calls)",
-                g_state.frames_rendered, g_state.suppressed_frames);
+                s.frames_rendered, s.suppressed_frames);
         }
         return;
     }
@@ -477,12 +454,12 @@ void render_overlay() noexcept {
     if (!ensure_renderer()) {
         // No window yet or no backend: count the frame as suppressed, because no ImGui work
         // happened, and try again next frame.
-        ++g_state.suppressed_frames;
+        ++s.suppressed_frames;
         return;
     }
 
-    if (ImGui::GetCurrentContext() != g_state.context) {
-        ImGui::SetCurrentContext(g_state.context);
+    if (ImGui::GetCurrentContext() != s.context) {
+        ImGui::SetCurrentContext(s.context);
     }
 
     LARGE_INTEGER start{};
@@ -492,7 +469,7 @@ void render_overlay() noexcept {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
 
-    g_state.input = snapshot_input();
+    s.input = snapshot_input();
     const double now = now_seconds();
     tick_animation(now);
     refresh_readouts(now);
@@ -505,49 +482,50 @@ void render_overlay() noexcept {
     (void)::QueryPerformanceCounter(&end);
     const float chrome_ms = milliseconds_between(start, end);
 
-    ++g_state.frames_rendered;
-    g_state.last_chrome_ms = chrome_ms;
-    g_state.suppression_logged = false;
-    if (g_state.frames_rendered == 1) {
-        g_state.average_chrome_ms = chrome_ms;
+    ++s.frames_rendered;
+    s.last_chrome_ms = chrome_ms;
+    s.suppression_logged = false;
+    if (s.frames_rendered == 1) {
+        s.average_chrome_ms = chrome_ms;
     } else {
-        g_state.average_chrome_ms += (chrome_ms - g_state.average_chrome_ms) * 0.05f;
+        s.average_chrome_ms += (chrome_ms - s.average_chrome_ms) * 0.05f;
     }
-    if (chrome_ms > g_state.worst_chrome_ms) {
-        g_state.worst_chrome_ms = chrome_ms;
+    if (chrome_ms > s.worst_chrome_ms) {
+        s.worst_chrome_ms = chrome_ms;
     }
 
-    if (g_state.average_chrome_ms > kChromeBudgetMs
-        && (now - g_state.last_chrome_warning_seconds) > kChromeWarningCooldownSeconds) {
-        g_state.last_chrome_warning_seconds = now;
+    if (s.average_chrome_ms > perf::kChromeBudgetMs
+        && (now - s.last_chrome_warning_seconds) > kChromeWarningCooldownSeconds) {
+        s.last_chrome_warning_seconds = now;
         WOKE_LOG_WARN("gui-renderer: chrome cost %.3f ms exceeds the %.2f ms budget (worst %.3f ms)",
-            static_cast<double>(g_state.average_chrome_ms), static_cast<double>(kChromeBudgetMs),
-            static_cast<double>(g_state.worst_chrome_ms));
+            static_cast<double>(s.average_chrome_ms), static_cast<double>(perf::kChromeBudgetMs),
+            static_cast<double>(s.worst_chrome_ms));
     }
 
-    if (g_state.frames_rendered % kHeartbeatFrames == 0) {
+    if (s.frames_rendered % kHeartbeatFrames == 0) {
         WOKE_LOG_DEBUG("gui-renderer: %zu frames, chrome avg %.3f ms, open %.2f, %zu anim slot(s)",
-            g_state.frames_rendered, static_cast<double>(g_state.average_chrome_ms),
-            static_cast<double>(util::clamp01(g_state.animation.value(g_state.open_spring))),
-            g_state.animation.active_state_count());
+            s.frames_rendered, static_cast<double>(s.average_chrome_ms),
+            static_cast<double>(util::clamp01(s.animation.value(s.open_spring))),
+            s.animation.active_state_count());
     }
 }
 
 bool visible() noexcept {
-    return g_state.visible;
+    return state().visible;
 }
 
 void set_visible(bool requested) noexcept {
-    if (g_state.visible == requested) {
+    State& s = state();
+    if (s.visible == requested) {
         return;
     }
-    g_state.visible = requested;
+    s.visible = requested;
     if (requested) {
         // Snap the pointer state so the first frame cannot see a stale click, and clear the
         // suppression counter for the next close.
-        g_state.suppression_logged = true;
+        s.suppression_logged = true;
         WOKE_LOG_INFO("gui: chrome shown (%zu section(s), grid=%s)",
-            kSectionCount, g_state.grid_layout ? "yes" : "no");
+            kSectionCount, s.grid_layout ? "yes" : "no");
     }
     // The frame scheduler's suppression predicate reads this (§7.8): while the chrome is visible
     // the pipeline is known to have work, independent of who is subscribed.
@@ -555,20 +533,21 @@ void set_visible(bool requested) noexcept {
 }
 
 void toggle() noexcept {
-    set_visible(!g_state.visible);
+    set_visible(!state().visible);
 }
 
 bool needs_render() noexcept {
-    if (g_state.visible) {
+    const State& s = state();
+    if (s.visible) {
         return true;
     }
     // Still closing: the close animation has to be rendered or it never finishes.
-    if (!g_state.animation.at_rest(g_state.open_spring)) {
+    if (!s.animation.at_rest(s.open_spring)) {
         return true;
     }
     // A toast outlives the chrome: the ClickGUI can be hidden while one is still on screen, and
     // that frame must not be suppressed or the toast would freeze mid-slide (§7.5, §7.8).
-    if (g_state.notifications.needs_render()) {
+    if (s.notifications.needs_render()) {
         return true;
     }
     // An enabled in-world overlay module (the step-7 HUD/crosshair/trajectories, the step-8
@@ -595,17 +574,17 @@ std::size_t registered_module_count() noexcept {
 }
 
 int toggle_key() noexcept {
-    return g_state.toggle_key;
+    return state().toggle_key;
 }
 
 void set_toggle_key(int virtual_key) noexcept {
     if (virtual_key > 0) {
-        g_state.toggle_key = virtual_key;
+        state().toggle_key = virtual_key;
     }
 }
 
 void notify(const char* title, const char* message, bool warning) noexcept {
-    if (!g_state.initialized) {
+    if (!state().initialized) {
         return;
     }
     push_toast(title != nullptr ? title : version::kClientName,
@@ -613,7 +592,8 @@ void notify(const char* title, const char* message, bool warning) noexcept {
 }
 
 void notify_keybind_toggle(int virtual_key) noexcept {
-    if (!g_state.initialized || virtual_key == 0) {
+    const State& s = state();
+    if (!s.initialized || virtual_key == 0) {
         return;
     }
     // One toast per module the key is bound to, reporting the state the keybind just produced.
@@ -629,21 +609,22 @@ void notify_keybind_toggle(int virtual_key) noexcept {
 }
 
 Stats stats() noexcept {
+    const State& s = state();
     Stats result;
-    result.initialized = g_state.initialized;
-    result.renderer_ready = g_state.renderer_ready;
-    result.visible = g_state.visible;
-    result.collapsed = g_state.collapsed;
+    result.initialized = s.initialized;
+    result.renderer_ready = s.renderer_ready;
+    result.visible = s.visible;
+    result.collapsed = s.collapsed;
     result.suppressed = !needs_render();
-    result.frames_rendered = g_state.frames_rendered;
-    result.suppressed_frames = g_state.suppressed_frames;
-    result.open_amount = util::clamp01(g_state.animation.value(g_state.open_spring));
-    result.last_chrome_ms = g_state.last_chrome_ms;
-    result.average_chrome_ms = g_state.average_chrome_ms;
-    result.worst_chrome_ms = g_state.worst_chrome_ms;
-    result.animation_slots = g_state.animation.active_state_count()
-        + g_state.animation.active_spring_count();
-    result.animation_overflows = g_state.animation.overflow_count();
+    result.frames_rendered = s.frames_rendered;
+    result.suppressed_frames = s.suppressed_frames;
+    result.open_amount = util::clamp01(s.animation.value(s.open_spring));
+    result.last_chrome_ms = s.last_chrome_ms;
+    result.average_chrome_ms = s.average_chrome_ms;
+    result.worst_chrome_ms = s.worst_chrome_ms;
+    result.animation_slots = s.animation.active_state_count()
+        + s.animation.active_spring_count();
+    result.animation_overflows = s.animation.overflow_count();
     return result;
 }
 

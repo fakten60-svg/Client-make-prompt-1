@@ -1,20 +1,17 @@
-#include "ui/gui.h"
+#include "ui/gui_internal.h"
 
 #include <windows.h>
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 
 #include <imgui.h>
-#include <imgui_impl_opengl3.h>
-#include <imgui_impl_win32.h>
 
 #include "core/build_config.h"
-#include "core/config.h"
 #include "core/event_bus.h"
-#include "core/events.h"
 #include "core/logger.h"
+#include "core/events.h"
+#include "core/perf.h"
 #include "core/version.h"
 #include "hooks/game_thread.h"
 #include "hooks/hook_manager.h"
@@ -22,195 +19,54 @@
 #include "hooks/wndproc_hook.h"
 #include "modules/category.h"
 #include "modules/module_manager.h"
-#include "modules/movement/velocity_display.h"
-#include "modules/visual/custom_crosshair.h"
-#include "modules/visual/hud_module.h"
-#include "modules/visual/trajectories.h"
-#include "ui/animation/animation_controller.h"
 #include "ui/animation/easing.h"
 #include "ui/components/keybind_badge.h"
-#include "ui/components/module_card.h"
-#include "ui/components/search_bar.h"
-#include "ui/components/sidebar.h"
-#include "ui/components/traffic_lights.h"
 #include "ui/hud.h"
 #include "ui/overlay.h"
 #include "ui/step8_frame.h"
-#include "ui/notifications.h"
-#include "ui/theme.h"
-#include "utils/math_utils.h"
-#include "utils/render_utils.h"
-#include "utils/string_buffer.h"
 
 #if WOKE_HAVE_JNI
-#include "jni/game_instance.h"
 #include "jni/reflection_cache.h"
 #endif
 
-// ImGui's Win32 backend deliberately leaves its message handler commented out in its header (it
-// does not want to pull <windows.h> into the helper), and expects the application to forward
-// declare it - this is the declaration the upstream Win32 example uses. It must stay at global
-// scope: the definition in imgui_impl_win32.cpp is not namespaced.
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
-    HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
+// The ClickGUI's static composition (blueprint §7.1-§7.5, roadmap steps 4-6).
+//
+// Timing, the ImGui theme, the Diagnostics readouts, layout geometry, the widget interaction
+// passes and every drawing routine. The per-frame orchestration lives in gui_overlay.cpp and the
+// in-world overlay in gui_hud.cpp; see gui_internal.h for the contract between the three.
 
 namespace woke::ui {
-namespace {
+namespace detail {
 
-using animation::AnimationController;
-using animation::StateHandle;
-using components::Input;
-using components::ModuleCard;
-using components::SearchBar;
-using components::Sidebar;
-using components::TrafficLights;
 using draw::Align;
-using draw::Rect;
-using util::FixedString;
-using util::Rgba;
+using ToastIcon = woke::ui::ToastIcon; // notifications.h declares it in woke::ui directly
 
-namespace modules = woke::modules;
+// ── The one state instance ─────────────────────────────────────────────────────────
 
-// The Misc/ClickGUI bind (§8: default RSHIFT).
-constexpr int kDefaultToggleKey = VK_RSHIFT;
-
-// Readouts are recomputed four times a second. The numbers on screen change at human speed, and
-// formatting ten labels per frame would be ten snprintf calls of pure waste inside the render
-// thread - the overlay's own budget is 0.2 ms (§7.4 gate).
-constexpr double kReadoutIntervalSeconds = 0.25;
-
-// §6.4 sets the whole-pipeline budget at 0.5 ms; this is the chrome's own share of it.
-constexpr float kChromeBudgetMs = 0.2f;
-constexpr double kChromeWarningCooldownSeconds = 10.0;
-
-constexpr std::uint64_t kHeartbeatFrames = 600;
-constexpr double kMaxFrameDeltaSeconds = 0.25;
-constexpr std::size_t kReadoutCount = 10;
-
-constexpr float kDensityButtonWidth = 62.0f;
-constexpr float kDensityButtonHeight = 22.0f;
-constexpr float kTileLabelOffset = 12.0f;
-constexpr float kTileValueOffset = 32.0f;
-
-// Content-pane metrics the composition owns: the search field in the header row, and the inset of
-// a settings row inside an expanded card's drawer. Everything card-shaped (body, drawer, chevron,
-// chip, pill) is sized by ModuleCard itself, so there is one definition of a card's geometry.
-constexpr float kSearchWidth = 220.0f;
-constexpr float kSearchHeight = 26.0f;
-constexpr float kSettingRowInset = 12.0f;
-constexpr float kSettingValueColumn = 96.0f;
-
-// Vertical distance from the content pane's padding box to where the module cards start: the
-// heading, its subtitle and one spacer row (matches draw_content's own layout math).
-constexpr float kTileHeaderOffset = 32.0f;
-
-struct Readout {
-    FixedString<24> label;
-    FixedString<44> value;
-};
-
-struct State {
-    bool initialized = false;
-    bool visible = false;
-    bool collapsed = false;
-    bool dragging = false;
-    bool window_positioned = false;
-    bool renderer_ready = false;
-    bool renderer_failed = false;
-    bool grid_layout = true;
-    bool suppression_logged = true; // true until a close is reported, so boot is quiet
-    int toggle_key = kDefaultToggleKey;
-
-    HWND window = nullptr;
-    ImGuiContext* context = nullptr;
-
-    events::Subscription key_subscription{};
-    events::Subscription focus_subscription{};
-
-    AnimationController animation{};
-    animation::SpringHandle open_spring{};
-    StateHandle collapse{};
-    StateHandle density{};
-    TrafficLights lights{};
-
-    // The widget library (roadmap step 6). One Sidebar, one SearchBar, one toast pool and one
-    // ModuleCard per registry row - all constructed once at boot, so no frame ever allocates a
-    // widget or an animation slot (§6.3). Cards are indexed by *registry* index: a filter change
-    // or a rebind therefore cannot move a card's animation slots onto a different module.
-    Sidebar sidebar{};
-    SearchBar search{};
-    Notifications notifications{};
-    std::array<ModuleCard, modules::ModuleManager::kMaxModules> cards{};
-
-    // The filtered module list for this frame, in registry order, with the registry index behind
-    // each entry. Rebuilt only when the query or the registry changes - never per frame (§7.1).
-    std::array<modules::BaseModule*, modules::ModuleManager::kMaxModules> visible_modules{};
-    std::array<std::size_t, modules::ModuleManager::kMaxModules> visible_indices{};
-    std::size_t visible_count = 0;
-    std::size_t cached_module_count = 0;
-    bool list_dirty = true;
-    // The header's "n/m shown | k enabled" line, formatted when the list changes (§7.1), not per
-    // frame.
-    FixedString<48> module_counts{};
-
-    // The one open settings drawer (by module, so it survives a filter change) and the keybind
-    // capture in progress (by registry index, so it survives one too). nullptr / -1 = none.
-    modules::BaseModule* expanded_module = nullptr;
-    int capture_index = -1;
-    settings::Setting* slider_drag = nullptr;
-
-    Section selected = Section::Diagnostics;
-
-    float drag_offset_x = 0.0f;
-    float drag_offset_y = 0.0f;
-    ImVec2 window_position = ImVec2(0.0f, 0.0f);
-
-    Input input{};
-
-    LARGE_INTEGER frequency{};
-    double last_frame_seconds = 0.0;
-    bool have_frame_time = false;
-
-    std::size_t frames_rendered = 0;
-    std::size_t suppressed_frames = 0;
-    float last_chrome_ms = 0.0f;
-    float average_chrome_ms = 0.0f;
-    float worst_chrome_ms = 0.0f;
-    double last_chrome_warning_seconds = -1.0;
-
-    std::array<Readout, kReadoutCount> readouts{};
-    double readout_refresh_at = 0.0;
-
-    // Interaction targets computed once per frame in screen space, so input handling and drawing
-    // cannot disagree about where a button is.
-    Rect header{};
-    Rect density_button{};
-    // Cached module card rectangles for the selected category, refreshed when the page or the
-    // module layout changes; input handling reads these instead of recomputing layout.
-    std::array<Rect, modules::ModuleManager::kMaxModules> card_rects{};
-    std::array<std::size_t, modules::ModuleManager::kMaxModules> card_registry{};
-    std::size_t card_count = 0;
-};
-
-State g_state{};
+State& state() noexcept {
+    static State instance;
+    return instance;
+}
 
 // ── Timing ────────────────────────────────────────────────────────────────────────
 
 double now_seconds() noexcept {
-    if (g_state.frequency.QuadPart <= 0) {
+    const State& s = state();
+    if (s.frequency.QuadPart <= 0) {
         return 0.0;
     }
     LARGE_INTEGER counter{};
     (void)::QueryPerformanceCounter(&counter);
-    return static_cast<double>(counter.QuadPart) / static_cast<double>(g_state.frequency.QuadPart);
+    return static_cast<double>(counter.QuadPart) / static_cast<double>(s.frequency.QuadPart);
 }
 
 float milliseconds_between(const LARGE_INTEGER& start, const LARGE_INTEGER& end) noexcept {
-    if (g_state.frequency.QuadPart <= 0) {
+    const State& s = state();
+    if (s.frequency.QuadPart <= 0) {
         return 0.0f;
     }
     const double ticks = static_cast<double>(end.QuadPart - start.QuadPart);
-    return static_cast<float>((ticks * 1000.0) / static_cast<double>(g_state.frequency.QuadPart));
+    return static_cast<float>((ticks * 1000.0) / static_cast<double>(s.frequency.QuadPart));
 }
 
 // ── Theme application ─────────────────────────────────────────────────────────────
@@ -249,83 +105,28 @@ void apply_imgui_style() noexcept {
     style.Colors[ImGuiCol_ButtonActive] = draw::to_im_vec4(theme::color::kAccent);
 }
 
-// ── Lazy renderer initialisation ──────────────────────────────────────────────────
-
-bool ensure_renderer() noexcept {
-    if (g_state.renderer_ready) {
-        return true;
-    }
-    if (g_state.renderer_failed) {
-        return false;
-    }
-    if (g_state.context == nullptr) {
-        return false;
-    }
-    if (g_state.window == nullptr) {
-        // Normal early state: the DLL can be injected before the WndProc hook has found the game
-        // window. Nothing is logged per frame - the boot log already says input is unavailable.
-        return false;
-    }
-
-    ImGui::SetCurrentContext(g_state.context);
-
-    // The Win32 backend in its OpenGL flavour (monitor DPI + cursor handling for a GL window), and
-    // then the GL3 backend. This runs inside the swap detour, where the game's GL context is
-    // current by definition - the one place a GL initialisation is guaranteed to be valid.
-    if (!ImGui_ImplWin32_InitForOpenGL(g_state.window)) {
-        g_state.renderer_failed = true;
-        WOKE_LOG_ERROR("gui-renderer: the ImGui Win32 backend could not attach to window %p",
-            static_cast<void*>(g_state.window));
-        return false;
-    }
-    if (!ImGui_ImplOpenGL3_Init(nullptr)) {
-        ImGui_ImplWin32_Shutdown();
-        g_state.renderer_failed = true;
-        WOKE_LOG_ERROR("gui-renderer: the ImGui OpenGL3 backend could not initialise");
-        return false;
-    }
-
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-    // The game owns the OS cursor while it has raw input, so the overlay draws its own. Without
-    // this the ClickGUI would be unusable in a captured window.
-    io.MouseDrawCursor = true;
-
-    g_state.renderer_ready = true;
-    WOKE_LOG_INFO("gui-renderer: ImGui %s ready on window %p (win32 + opengl3)", IMGUI_VERSION,
-        static_cast<void*>(g_state.window));
-    return true;
-}
-
 // ── Readouts ──────────────────────────────────────────────────────────────────────
 
-template <typename... Args>
-void set_readout(std::size_t index, const char* label, const char* format, Args... args) noexcept {
-    if (index >= kReadoutCount) {
-        return;
-    }
-    g_state.readouts[index].label.assign(label);
-    g_state.readouts[index].value.format(format, args...);
-}
-
 const char* overlay_state_text() noexcept {
-    if (g_state.renderer_failed) {
+    const State& s = state();
+    if (s.renderer_failed) {
         return "backend unavailable";
     }
-    if (!g_state.visible) {
+    if (!s.visible) {
         return "hidden - zero draw calls";
     }
-    if (!g_state.renderer_ready) {
+    if (!s.renderer_ready) {
         return "waiting for the game window";
     }
     return "rendering";
 }
 
 void refresh_readouts(double now) noexcept {
-    if (now < g_state.readout_refresh_at) {
+    State& s = state();
+    if (now < s.readout_refresh_at) {
         return;
     }
-    g_state.readout_refresh_at = now + kReadoutIntervalSeconds;
+    s.readout_refresh_at = now + kReadoutIntervalSeconds;
 
     const hooks::game_thread::Stats pipeline = hooks::game_thread::stats();
 
@@ -335,7 +136,7 @@ void refresh_readouts(double now) noexcept {
         static_cast<unsigned long long>(pipeline.ticks));
     set_readout(2, "Pipeline cost", "avg %.3f ms",
         static_cast<double>(pipeline.average_pipeline_ms));
-    set_readout(3, "Chrome cost", "avg %.3f ms", static_cast<double>(g_state.average_chrome_ms));
+    set_readout(3, "Chrome cost", "avg %.3f ms", static_cast<double>(s.average_chrome_ms));
     set_readout(4, "Swap hook", "%llu frames",
         static_cast<unsigned long long>(hooks::swap_hook_frame_count()));
     set_readout(5, "Hooks", "%zu active, %zu queued", hooks::active_hook_count(),
@@ -354,15 +155,8 @@ void refresh_readouts(double now) noexcept {
 
 // ── Geometry ──────────────────────────────────────────────────────────────────────
 
-struct Layout {
-    Rect window{};
-    Rect header{};
-    Rect body{};
-    Rect rail{};
-    Rect content{};
-};
-
 Layout compute_layout(float open_amount, float collapse) noexcept {
+    State& s = state();
     const ImGuiIO& io = ImGui::GetIO();
     const float scale =
         util::lerp(theme::metrics::kOpenScaleFrom, 1.0f, animation::ease_out_expo(open_amount));
@@ -374,20 +168,20 @@ Layout compute_layout(float open_amount, float collapse) noexcept {
                              theme::metrics::kCollapsedHeight, collapse)
         * scale;
 
-    if (!g_state.window_positioned) {
-        g_state.window_position = ImVec2((io.DisplaySize.x - width) * 0.5f,
+    if (!s.window_positioned) {
+        s.window_position = ImVec2((io.DisplaySize.x - width) * 0.5f,
             (io.DisplaySize.y - height) * 0.5f);
-        g_state.window_positioned = true;
+        s.window_positioned = true;
     }
 
     // Keep the window reachable even if the display was resized under it.
     const float max_x = io.DisplaySize.x > width ? io.DisplaySize.x - width : 0.0f;
     const float max_y = io.DisplaySize.y > height ? io.DisplaySize.y - height : 0.0f;
-    g_state.window_position.x = util::clamp(g_state.window_position.x, 0.0f, max_x);
-    g_state.window_position.y = util::clamp(g_state.window_position.y, 0.0f, max_y);
+    s.window_position.x = util::clamp(s.window_position.x, 0.0f, max_x);
+    s.window_position.y = util::clamp(s.window_position.y, 0.0f, max_y);
 
     Layout layout;
-    layout.window = Rect{g_state.window_position.x, g_state.window_position.y, width, height};
+    layout.window = Rect{s.window_position.x, s.window_position.y, width, height};
     layout.header = layout.window.slice_top(util::lerp(theme::metrics::kHeaderHeight,
         theme::metrics::kCollapsedHeight, collapse));
     layout.body = layout.window.without_top(layout.header.h);
@@ -396,8 +190,6 @@ Layout compute_layout(float open_amount, float collapse) noexcept {
     layout.content = layout.body.without_left(sidebar);
     return layout;
 }
-
-// ── Input snapshot ────────────────────────────────────────────────────────────────
 
 Input snapshot_input() noexcept {
     const ImGuiIO& io = ImGui::GetIO();
@@ -417,53 +209,55 @@ Input snapshot_input() noexcept {
 // ── Interaction ───────────────────────────────────────────────────────────────────
 
 void handle_drag(const Layout& layout) noexcept {
-    const Input& input = g_state.input;
+    State& s = state();
+    const Input& input = s.input;
 
-    if (g_state.dragging) {
+    if (s.dragging) {
         if (input.is_down(0)) {
-            g_state.window_position.x = input.mouse_x - g_state.drag_offset_x;
-            g_state.window_position.y = input.mouse_y - g_state.drag_offset_y;
-            g_state.window_positioned = true;
+            s.window_position.x = input.mouse_x - s.drag_offset_x;
+            s.window_position.y = input.mouse_y - s.drag_offset_y;
+            s.window_positioned = true;
         } else {
-            g_state.dragging = false;
+            s.dragging = false;
         }
         return;
     }
 
     // A drag starts on the chrome bar, but not on a traffic light or the density button: those
     // consume their own press, and the header is otherwise the window's grab handle.
-    if (!input.is_pressed(0) || g_state.collapsed) {
+    if (!input.is_pressed(0) || s.collapsed) {
         return;
     }
     if (!layout.header.contains(input.mouse_x, input.mouse_y)) {
         return;
     }
-    if (g_state.density_button.contains(input.mouse_x, input.mouse_y)) {
+    if (s.density_button.contains(input.mouse_x, input.mouse_y)) {
         return;
     }
 
     const Rect lights = Rect{layout.header.left() + theme::metrics::kTrafficLightInset,
         layout.header.top(), theme::metrics::kTrafficLightGap * 3.0f, layout.header.h};
     for (std::size_t index = 0; index < TrafficLights::kCount; ++index) {
-        if (g_state.lights.button_rect(lights, index).inset(-4.0f).contains(input.mouse_x,
+        if (s.lights.button_rect(lights, index).inset(-4.0f).contains(input.mouse_x,
                 input.mouse_y)) {
             return;
         }
     }
 
-    g_state.dragging = true;
-    g_state.drag_offset_x = input.mouse_x - g_state.window_position.x;
-    g_state.drag_offset_y = input.mouse_y - g_state.window_position.y;
+    s.dragging = true;
+    s.drag_offset_x = input.mouse_x - s.window_position.x;
+    s.drag_offset_y = input.mouse_y - s.window_position.y;
 }
 
 // Pushes the registry's counters and the frame rate into the sidebar. Two int reads per category
 // by design (§4.4): the manager precomputes the buckets, so this is six lookups, not a scan.
 void sync_sidebar() noexcept {
+    State& s = state();
     const modules::ModuleManager& registry = modules::manager();
     for (std::size_t index = 0; index < kModuleCategoryCount; ++index) {
         const modules::Category category =
             modules::category_from_section(static_cast<Section>(index));
-        g_state.sidebar.set_counts(index, registry.category_enabled(category),
+        s.sidebar.set_counts(index, registry.category_enabled(category),
             registry.category_total(category));
     }
 
@@ -471,24 +265,19 @@ void sync_sidebar() noexcept {
     FixedString<64> footer;
     footer.format("%s %s | %.0f fps", version::kClientName, version::kVersion,
         static_cast<double>(pipeline.frames_per_second));
-    g_state.sidebar.set_footer(footer.c_str());
+    s.sidebar.set_footer(footer.c_str());
 }
 
-// The content pane's padding box: where the heading, the subtitle and the search field live.
-[[nodiscard]] Rect content_body(const Rect& content) noexcept {
+Rect content_body(const Rect& content) noexcept {
     return content.inset(theme::metrics::kContentPadding);
 }
 
-// The search field, right-aligned on the heading row. Input handling and drawing both call this,
-// so the hit target and the field cannot drift apart.
-[[nodiscard]] Rect search_field_rect(const Rect& content) noexcept {
+Rect search_field_rect(const Rect& content) noexcept {
     const Rect body = content_body(content);
     return Rect{body.right() - kSearchWidth, body.top() - 2.0f, kSearchWidth, kSearchHeight};
 }
 
-// The rectangle the module cards occupy: the body below the heading, its accent underline and its
-// subtitle line. One definition for input and drawing (the step-4 note promised exactly this).
-[[nodiscard]] Rect card_pane(const Rect& content) noexcept {
+Rect card_pane(const Rect& content) noexcept {
     const Rect body = content_body(content);
     const float header_drop = kTileHeaderOffset + theme::metrics::kHeaderFontSize + 6.0f;
     return Rect{body.left(), body.top() + header_drop, body.w,
@@ -496,12 +285,13 @@ void sync_sidebar() noexcept {
 }
 
 void handle_lights(const Layout& layout) noexcept {
+    State& s = state();
     const Rect lights = Rect{layout.header.left() + theme::metrics::kTrafficLightInset,
         layout.header.top(), theme::metrics::kTrafficLightGap * 3.0f, layout.header.h};
-    g_state.lights.set_area(lights);
-    (void)g_state.lights.handle_input(g_state.input);
+    s.lights.set_area(lights);
+    (void)s.lights.handle_input(s.input);
 
-    switch (g_state.lights.take_action()) {
+    switch (s.lights.take_action()) {
     case TrafficLights::Action::Close:
         // Red hides the GUI; it never unloads the client (§3.6).
         set_visible(false);
@@ -509,13 +299,13 @@ void handle_lights(const Layout& layout) noexcept {
     case TrafficLights::Action::Minimize:
         // Yellow collapses to a pill that stays clickable, so the window can be brought back
         // without a keybind.
-        g_state.collapsed = !g_state.collapsed;
-        g_state.window_positioned = true;
+        s.collapsed = !s.collapsed;
+        s.window_positioned = true;
         break;
     case TrafficLights::Action::Zoom:
         // Green toggles the content density: grid <-> list, the same axis the module grid uses.
-        g_state.grid_layout = !g_state.grid_layout;
-        g_state.animation.set_target(g_state.density, g_state.grid_layout ? 0.0f : 1.0f);
+        s.grid_layout = !s.grid_layout;
+        s.animation.set_target(s.density, s.grid_layout ? 0.0f : 1.0f);
         break;
     case TrafficLights::Action::None:
         break;
@@ -523,40 +313,41 @@ void handle_lights(const Layout& layout) noexcept {
 }
 
 void handle_density_button() noexcept {
-    if (!g_state.density_button.contains(g_state.input.mouse_x, g_state.input.mouse_y)) {
+    State& s = state();
+    if (!s.density_button.contains(s.input.mouse_x, s.input.mouse_y)) {
         return;
     }
-    if (g_state.input.is_pressed(0)) {
-        g_state.grid_layout = !g_state.grid_layout;
-        g_state.animation.set_target(g_state.density, g_state.grid_layout ? 0.0f : 1.0f);
+    if (s.input.is_pressed(0)) {
+        s.grid_layout = !s.grid_layout;
+        s.animation.set_target(s.density, s.grid_layout ? 0.0f : 1.0f);
     }
 }
 
-// ── Step 6: the module list, its cards and the settings drawers ────────────────
+// ── Toasts and the overlay-awake flag ───────────────────────────────────────────────
 
-// The in-world overlay's entry points, defined with the rest of that layer further down. They are
-// declared here because sync_overlay_request runs every frame and the frame scheduler's flag has
-// to include them (§7.6, §7.8).
-bool inworld_overlay_wanted() noexcept;
-void render_inworld_overlay() noexcept;
-void sync_clickgui_module() noexcept;
+void sync_clickgui_module() noexcept {
+    modules::BaseModule* module = modules::manager().find("ClickGUI");
+    if (module != nullptr && module->enabled() != state().visible) {
+        module->set_enabled(state().visible);
+        modules::manager().notify_changed();
+    }
+}
 
-// The overlay must also stay awake for something that is not the chrome: a toast outlives the
-// ClickGUI being hidden, and the frame scheduler's predicate reads this flag.
 void sync_overlay_request() noexcept {
     // The ClickGUI module mirrors visibility whichever way it changed: a card click, a keybind, or
     // the overlay's own red traffic light.
     sync_clickgui_module();
-    hooks::game_thread::set_overlay_requested(g_state.visible || g_state.notifications.needs_render()
-        || inworld_overlay_wanted());
+    hooks::game_thread::set_overlay_requested(
+        state().visible || state().notifications.needs_render() || inworld_overlay_wanted());
 }
 
 void push_toast(const char* title, const char* message, ToastIcon icon) noexcept {
+    State& s = state();
     Toast toast;
     toast.title = title;
     toast.message = message;
     toast.icon = icon;
-    if (!g_state.notifications.push(toast)) {
+    if (!s.notifications.push(toast)) {
         WOKE_LOG_DEBUG("notifications: pool full - a toast was dropped");
         return;
     }
@@ -570,11 +361,14 @@ void push_module_toast(const char* name, bool enabled) noexcept {
         enabled ? ToastIcon::Success : ToastIcon::Info);
 }
 
+// ── Module cards and settings rows ──────────────────────────────────────────────────
+
 // Rebuilds the filtered module list for the selected category, and the header's counter line with
 // it. Runs on a query change or a registry change - never on a timer (§7.1).
 void recompute_visible_modules() noexcept {
+    State& s = state();
     const modules::ModuleManager& registry = modules::manager();
-    const modules::Category category = modules::category_from_section(g_state.selected);
+    const modules::Category category = modules::category_from_section(s.selected);
     std::size_t count = 0;
     for (std::size_t index = 0; index < registry.count(); ++index) {
         modules::BaseModule* module = registry.at(index);
@@ -583,19 +377,19 @@ void recompute_visible_modules() noexcept {
         }
         // A query matches the name or the description: "zoom" should find Zoom, and "sprint"
         // should also find the module that is *described* as a sprint helper.
-        if (!g_state.search.empty() && !g_state.search.matches(module->name())
-            && !g_state.search.matches(module->description())) {
+        if (!s.search.empty() && !s.search.matches(module->name())
+            && !s.search.matches(module->description())) {
             continue;
         }
-        g_state.visible_modules[count] = module;
-        g_state.visible_indices[count] = index;
+        s.visible_modules[count] = module;
+        s.visible_indices[count] = index;
         ++count;
     }
-    g_state.visible_count = count;
-    g_state.list_dirty = false;
+    s.visible_count = count;
+    s.list_dirty = false;
 
     // Formatted here rather than per frame: the numbers move only when the list does (§7.1).
-    g_state.module_counts.format("%zu/%zu shown  |  %zu enabled", g_state.visible_count,
+    s.module_counts.format("%zu/%zu shown  |  %zu enabled", s.visible_count,
         registry.category_total(category), registry.category_enabled(category));
 }
 
@@ -604,7 +398,8 @@ void recompute_visible_modules() noexcept {
 // tiles per row; list density - and an *expanded* card - takes the full width, because a drawer
 // needs the room and a half-width drawer would clip its own rows.
 void layout_module_cards(const Rect& pane) noexcept {
-    const float density = util::clamp01(g_state.animation.value(g_state.density));
+    State& s = state();
+    const float density = util::clamp01(s.animation.value(s.density));
     const float gap = theme::metrics::kTileGap;
     const float half_width = (pane.w - gap) * 0.5f;
     const float body = ModuleCard::body_height(density);
@@ -616,9 +411,9 @@ void layout_module_cards(const Rect& pane) noexcept {
     float row_height = 0.0f;
     std::size_t placed = 0;
 
-    for (std::size_t index = 0; index < g_state.visible_count; ++index) {
-        modules::BaseModule* module = g_state.visible_modules[index];
-        const bool expanded = (module == g_state.expanded_module);
+    for (std::size_t index = 0; index < s.visible_count; ++index) {
+        modules::BaseModule* module = s.visible_modules[index];
+        const bool expanded = (module == s.expanded_module);
         const float height =
             body + (expanded ? ModuleCard::drawer_height_for(module->setting_count()) : 0.0f);
         const float width = (list_mode || expanded) ? pane.w : half_width;
@@ -634,8 +429,8 @@ void layout_module_cards(const Rect& pane) noexcept {
             break; // no scrolling yet: the pane clips, exactly like the step-4 readout tiles
         }
 
-        g_state.card_rects[placed] = Rect{x, y, width, height};
-        g_state.card_registry[placed] = g_state.visible_indices[index];
+        s.card_rects[placed] = Rect{x, y, width, height};
+        s.card_registry[placed] = s.visible_indices[index];
         ++placed;
 
         if (width >= pane.w - 0.001f) {
@@ -654,16 +449,17 @@ void layout_module_cards(const Rect& pane) noexcept {
             row_height = 0.0f;
         }
     }
-    g_state.card_count = placed;
+    s.card_count = placed;
 }
 
 // The card currently carrying an open drawer, by layout slot. kMaxModules means "none".
-[[nodiscard]] std::size_t expanded_slot() noexcept {
-    if (g_state.expanded_module == nullptr) {
+std::size_t expanded_slot() noexcept {
+    const State& s = state();
+    if (s.expanded_module == nullptr) {
         return modules::ModuleManager::kMaxModules;
     }
-    for (std::size_t slot = 0; slot < g_state.card_count; ++slot) {
-        if (modules::manager().at(g_state.card_registry[slot]) == g_state.expanded_module) {
+    for (std::size_t slot = 0; slot < s.card_count; ++slot) {
+        if (modules::manager().at(s.card_registry[slot]) == s.expanded_module) {
             return slot;
         }
     }
@@ -673,7 +469,7 @@ void layout_module_cards(const Rect& pane) noexcept {
 // Where a settings row sits inside a drawer. The *card* owns the drawer shell; its contents are
 // the GUI's, because the GUI is the layer that knows about settings (ModuleCard stays independent
 // of the module/setting model, which is what lets the host tests drive it standalone).
-[[nodiscard]] Rect setting_row_rect(const Rect& drawer, std::size_t row) noexcept {
+Rect setting_row_rect(const Rect& drawer, std::size_t row) noexcept {
     return Rect{drawer.left() + kSettingRowInset,
         drawer.top() + ModuleCard::kDrawerPadding
             + (static_cast<float>(row) * ModuleCard::kDrawerRowHeight),
@@ -682,46 +478,48 @@ void layout_module_cards(const Rect& pane) noexcept {
 
 // The open drawer's rectangle in this frame's layout; empty when nothing is expanded or the card
 // fell outside the visible pane.
-[[nodiscard]] Rect expanded_drawer_rect() noexcept {
+Rect expanded_drawer_rect() noexcept {
+    const State& s = state();
     const std::size_t slot = expanded_slot();
-    if (slot >= g_state.card_count) {
+    if (slot >= s.card_count) {
         return Rect{};
     }
-    const std::size_t registry_index = g_state.card_registry[slot];
+    const std::size_t registry_index = s.card_registry[slot];
     const modules::BaseModule* module = modules::manager().at(registry_index);
     if (module == nullptr) {
         return Rect{};
     }
-    return ModuleCard::drawer_area_for(g_state.card_rects[slot], module->setting_count());
+    return ModuleCard::drawer_area_for(s.card_rects[slot], module->setting_count());
 }
 
 void handle_module_cards(const Rect& pane, float alpha) noexcept {
+    State& s = state();
     layout_module_cards(pane);
 
-    const Input& input = g_state.input;
-    for (std::size_t slot = 0; slot < g_state.card_count; ++slot) {
-        const std::size_t registry_index = g_state.card_registry[slot];
+    const Input& input = s.input;
+    for (std::size_t slot = 0; slot < s.card_count; ++slot) {
+        const std::size_t registry_index = s.card_registry[slot];
         modules::BaseModule* module = modules::manager().at(registry_index);
         if (module == nullptr) {
             continue;
         }
 
-        ModuleCard& card = g_state.cards[registry_index];
-        card.set_area(g_state.card_rects[slot]);
+        ModuleCard& card = s.cards[registry_index];
+        card.set_area(s.card_rects[slot]);
         card.set_alpha(alpha);
         card.set_content(module->name(), module->description(), module->bind());
         card.set_enabled(module->enabled());
-        card.set_expanded(module == g_state.expanded_module);
+        card.set_expanded(module == s.expanded_module);
         card.set_drawer_rows(module->setting_count());
         // Exactly one card can be the capture target, because there is one capture index.
-        card.set_capture_armed(g_state.capture_index == static_cast<int>(registry_index));
+        card.set_capture_armed(s.capture_index == static_cast<int>(registry_index));
 
         // All mutation happens in this input phase (§7.3: render never mutates); the draw phase
         // only reads the resulting state.
         const ModuleCard::Result result = card.interact(input);
         if (result.bind_clicked) {
-            const bool arming = g_state.capture_index != static_cast<int>(registry_index);
-            g_state.capture_index = arming ? static_cast<int>(registry_index) : -1;
+            const bool arming = s.capture_index != static_cast<int>(registry_index);
+            s.capture_index = arming ? static_cast<int>(registry_index) : -1;
             if (arming) {
                 WOKE_LOG_DEBUG("keybind: capturing a new bind for '%s'", module->name());
             }
@@ -730,14 +528,14 @@ void handle_module_cards(const Rect& pane, float alpha) noexcept {
         if (result.expand_toggled) {
             // One drawer at a time: a second open drawer would push the card being read off the
             // pane, and this layout has no scrolling yet.
-            g_state.expanded_module = (g_state.expanded_module == module) ? nullptr : module;
+            s.expanded_module = (s.expanded_module == module) ? nullptr : module;
             continue;
         }
         if (result.toggled && module->set_enabled(!module->enabled())) {
             modules::manager().notify_changed();
             (void)save_config();
             card.set_enabled(module->enabled()); // the pill must not lag the click by a frame
-            g_state.list_dirty = true;            // the sidebar's counter badges changed
+            s.list_dirty = true;                 // the sidebar's counter badges changed
             push_module_toast(module->name(), module->enabled());
         }
     }
@@ -752,7 +550,7 @@ void arm_bind_capture(modules::BaseModule* module) noexcept {
     const modules::ModuleManager& registry = modules::manager();
     for (std::size_t index = 0; index < registry.count(); ++index) {
         if (registry.at(index) == module) {
-            g_state.capture_index = static_cast<int>(index);
+            state().capture_index = static_cast<int>(index);
             WOKE_LOG_DEBUG("keybind: capturing a new bind for '%s'", module->name());
             return;
         }
@@ -764,9 +562,10 @@ void arm_bind_capture(modules::BaseModule* module) noexcept {
 // the pointer leaves the row, because "you must keep the cursor inside" is the classic way for a
 // slider to feel broken.
 void handle_settings_rows() noexcept {
-    modules::BaseModule* module = g_state.expanded_module;
+    State& s = state();
+    modules::BaseModule* module = s.expanded_module;
     if (module == nullptr) {
-        g_state.slider_drag = nullptr;
+        s.slider_drag = nullptr;
         return;
     }
     const Rect drawer = expanded_drawer_rect();
@@ -774,7 +573,7 @@ void handle_settings_rows() noexcept {
         return;
     }
 
-    const Input& input = g_state.input;
+    const Input& input = s.input;
     for (std::size_t row = 0; row < module->setting_count(); ++row) {
         settings::Setting* setting = module->settings()[row];
         if (setting == nullptr) {
@@ -785,15 +584,15 @@ void handle_settings_rows() noexcept {
 
         if (setting->kind() == settings::Kind::Slider) {
             if (hovered && input.is_pressed(0)) {
-                g_state.slider_drag = setting;
+                s.slider_drag = setting;
             }
-            if (g_state.slider_drag == setting) {
+            if (s.slider_drag == setting) {
                 if (input.is_down(0)) {
                     const float t = util::inverse_lerp(rect.left(), rect.right(), input.mouse_x);
                     setting->set_float(
                         util::lerp(setting->float_minimum(), setting->float_maximum(), t));
                 } else {
-                    g_state.slider_drag = nullptr;
+                    s.slider_drag = nullptr;
                     (void)save_config();
                 }
             }
@@ -822,21 +621,22 @@ void handle_settings_rows() noexcept {
 }
 
 void draw_settings_rows(ImDrawList* draw_list, float alpha) noexcept {
+    const State& s = state();
     const std::size_t slot = expanded_slot();
-    const modules::BaseModule* module = g_state.expanded_module;
-    if (module == nullptr || slot >= g_state.card_count || module->setting_count() == 0) {
+    const modules::BaseModule* module = s.expanded_module;
+    if (module == nullptr || slot >= s.card_count || module->setting_count() == 0) {
         return;
     }
     // The rows fade with the drawer's own reveal, so they can never be visible through a closed
     // drawer shell.
-    const float open = g_state.cards[g_state.card_registry[slot]].open_amount();
+    const float open = s.cards[s.card_registry[slot]].open_amount();
     if (open <= 0.01f) {
         return;
     }
     const Rect drawer =
-        ModuleCard::drawer_area_for(g_state.card_rects[slot], module->setting_count());
+        ModuleCard::drawer_area_for(s.card_rects[slot], module->setting_count());
     const float row_alpha = alpha * open;
-    const Input& input = g_state.input;
+    const Input& input = s.input;
 
     for (std::size_t row = 0; row < module->setting_count(); ++row) {
         const settings::Setting* setting = module->settings()[row];
@@ -845,7 +645,7 @@ void draw_settings_rows(ImDrawList* draw_list, float alpha) noexcept {
         }
         const Rect rect = setting_row_rect(drawer, row);
         const bool active = rect.contains(input.mouse_x, input.mouse_y)
-            || g_state.slider_drag == setting;
+            || s.slider_drag == setting;
 
         if (active) {
             draw::rounded_rect(draw_list, rect,
@@ -913,50 +713,53 @@ void draw_settings_rows(ImDrawList* draw_list, float alpha) noexcept {
 // Draw-only pass: the cards were handed this frame's alpha in the input phase
 // (handle_module_cards sets it before interacting), so this function takes no alpha of its own.
 void draw_module_cards(ImDrawList* draw_list) noexcept {
-    for (std::size_t slot = 0; slot < g_state.card_count; ++slot) {
-        const std::size_t registry_index = g_state.card_registry[slot];
-        const Rect& card = g_state.card_rects[slot];
+    State& s = state();
+    for (std::size_t slot = 0; slot < s.card_count; ++slot) {
+        const std::size_t registry_index = s.card_registry[slot];
+        const Rect& card = s.card_rects[slot];
         if (card.empty()) {
             continue;
         }
         // No state is mutated here: the rectangles, the alpha and every target were set in this
         // frame's input phase, and the card renders itself from them (§7.3).
-        g_state.cards[registry_index].render(draw_list, card);
+        s.cards[registry_index].render(draw_list, card);
     }
 }
 
 // ── Drawing ───────────────────────────────────────────────────────────────────────
 
 FixedString<64> compose_title() noexcept {
+    const State& s = state();
     FixedString<64> title;
     title.assign(version::kClientName);
-    if (!g_state.collapsed) {
+    if (!s.collapsed) {
         title.append("  ·  ");
-        title.append(section_label(g_state.selected));
+        title.append(section_label(s.selected));
     }
     return title;
 }
 
 void draw_chrome_bar(ImDrawList* draw_list, const Layout& layout, float collapse) noexcept {
+    State& s = state();
     const Rgba chrome = util::with_alpha(theme::color::kChromeBar, 1.0f - (0.6f * collapse));
     draw::rounded_rect(draw_list, layout.header, chrome, theme::metrics::kWindowRounding,
         ImDrawFlags_RoundCornersTop);
 
-    g_state.lights.render(draw_list, Rect{layout.header.left() + theme::metrics::kTrafficLightInset,
-                                      layout.header.top(), theme::metrics::kTrafficLightGap * 3.0f,
-                                      layout.header.h});
+    s.lights.render(draw_list, Rect{layout.header.left() + theme::metrics::kTrafficLightInset,
+                                    layout.header.top(), theme::metrics::kTrafficLightGap * 3.0f,
+                                    layout.header.h});
 
     const FixedString<64> title = compose_title();
     draw::text_in(draw_list, layout.header, title.c_str(), theme::color::kText, Align::Center,
         theme::metrics::kHeaderFontSize);
 
     if (collapse < 0.5f) {
-        const char* density = g_state.grid_layout ? "Grid" : "List";
-        draw::rounded_rect(draw_list, g_state.density_button, theme::color::kCard,
+        const char* density = s.grid_layout ? "Grid" : "List";
+        draw::rounded_rect(draw_list, s.density_button, theme::color::kCard,
             theme::metrics::kFrameRounding);
-        draw::border_stroke(draw_list, g_state.density_button, theme::color::kCardBorder,
+        draw::border_stroke(draw_list, s.density_button, theme::color::kCardBorder,
             theme::metrics::kFrameRounding);
-        draw::text_in(draw_list, g_state.density_button, density, theme::color::kTextMuted,
+        draw::text_in(draw_list, s.density_button, density, theme::color::kTextMuted,
             Align::Center);
     }
 
@@ -986,7 +789,8 @@ void draw_tiles(ImDrawList* draw_list, const Rect& area, float alpha) noexcept {
     // Density is a single animated value: 0 lays the readouts out as a 2-column grid, 1 as
     // full-width list rows. One AnimState drives both the tile size and the column count, so the
     // two can never disagree mid-animation.
-    const float density = util::clamp01(g_state.animation.value(g_state.density));
+    State& s = state();
+    const float density = util::clamp01(s.animation.value(s.density));
     const float gap = theme::metrics::kTileGap;
     const float columns_span = 2.0f;
     const float grid_width = (area.w - gap) * 0.5f;
@@ -998,7 +802,7 @@ void draw_tiles(ImDrawList* draw_list, const Rect& area, float alpha) noexcept {
     float y = area.top();
     float column = 0.0f;
 
-    for (const Readout& readout : g_state.readouts) {
+    for (const Readout& readout : s.readouts) {
         draw_tile(draw_list, Rect{x, y, tile_width, tile_height}, readout, alpha);
 
         column += 1.0f;
@@ -1079,12 +883,13 @@ void draw_theme_swatches(ImDrawList* draw_list, const Rect& area, float alpha) n
 }
 
 void draw_empty_state(ImDrawList* draw_list, const Rect& area, float alpha) noexcept {
+    const State& s = state();
     FixedString<48> planned;
     planned.format("Planned in this category: %zu module(s)",
-        category_catalog_size(g_state.selected));
+        category_catalog_size(s.selected));
     // An empty list has two very different causes and the user should not have to guess which:
     // nothing is registered yet, or the query matches nothing.
-    const char* headline = g_state.search.empty()
+    const char* headline = s.search.empty()
         ? "No modules registered in this category yet."
         : "No modules match the search.";
     draw::text_in(draw_list, area, headline,
@@ -1095,6 +900,7 @@ void draw_empty_state(ImDrawList* draw_list, const Rect& area, float alpha) noex
 }
 
 void draw_content(ImDrawList* draw_list, const Layout& layout, float collapse) noexcept {
+    State& s = state();
     if (collapse >= 0.999f || layout.content.empty()) {
         return;
     }
@@ -1104,19 +910,19 @@ void draw_content(ImDrawList* draw_list, const Layout& layout, float collapse) n
         ImDrawFlags_RoundCornersBottomRight);
 
     const Rect body = content_body(layout.content);
-    draw::text(draw_list, body.left(), body.top(), section_label(g_state.selected),
+    draw::text(draw_list, body.left(), body.top(), section_label(s.selected),
         util::with_alpha(theme::color::kText, alpha), theme::metrics::kHeaderFontSize);
 
     const Rgba accent =
-        util::with_alpha(theme::category_accent(g_state.selected), alpha);
+        util::with_alpha(theme::category_accent(s.selected), alpha);
     const float title_bottom = body.top() + theme::metrics::kHeaderFontSize + 6.0f;
     draw::line(draw_list, body.left(), title_bottom, body.left() + 42.0f, title_bottom, accent, 2.0f);
 
     // The sub-badge: the live counter line for a module category (formatted when the list
     // changed, not per frame), the static section description everywhere else.
-    const char* subtitle = is_module_category(g_state.selected)
-        ? g_state.module_counts.c_str()
-        : section_subtitle(g_state.selected);
+    const char* subtitle = is_module_category(s.selected)
+        ? s.module_counts.c_str()
+        : section_subtitle(s.selected);
     draw::text_clipped(draw_list,
         Rect{body.left(), title_bottom + 6.0f, body.w - kSearchWidth - 8.0f, 18.0f}, subtitle,
         util::with_alpha(theme::color::kTextMuted, alpha), Align::Left,
@@ -1124,22 +930,22 @@ void draw_content(ImDrawList* draw_list, const Layout& layout, float collapse) n
 
     // The search field belongs to every page; it is drawn by its own component so the caret and
     // the magnifier are the same everywhere.
-    g_state.search.render(draw_list, search_field_rect(layout.content));
+    s.search.render(draw_list, search_field_rect(layout.content));
 
     const Rect content_area = card_pane(layout.content);
     if (content_area.empty()) {
         return;
     }
 
-    if (g_state.selected == Section::Diagnostics) {
+    if (s.selected == Section::Diagnostics) {
         draw_tiles(draw_list, content_area, alpha);
-    } else if (g_state.selected == Section::ThemePage) {
+    } else if (s.selected == Section::ThemePage) {
         draw_theme_swatches(draw_list, content_area, alpha);
-    } else if (is_module_category(g_state.selected)) {
+    } else if (is_module_category(s.selected)) {
         // Live count from the registry, not cached state: switching categories must not show the
         // previous category's cards or a stale empty message.
         const bool has_modules =
-            modules::manager().category_total(modules::category_from_section(g_state.selected)) > 0;
+            modules::manager().category_total(modules::category_from_section(s.selected)) > 0;
         if (has_modules) {
             draw_module_cards(draw_list);
             // The rows come after every card, so the open drawer's shell is already beneath them.
@@ -1152,12 +958,13 @@ void draw_content(ImDrawList* draw_list, const Layout& layout, float collapse) n
     }
 }
 
-// ── Frame ─────────────────────────────────────────────────────────────────────────
+// ── Frame pieces ──────────────────────────────────────────────────────────────────
 
 void tick_animation(double now) noexcept {
-    const double delta = g_state.have_frame_time ? (now - g_state.last_frame_seconds) : 0.0;
-    g_state.last_frame_seconds = now;
-    g_state.have_frame_time = true;
+    State& s = state();
+    const double delta = s.have_frame_time ? (now - s.last_frame_seconds) : 0.0;
+    s.last_frame_seconds = now;
+    s.have_frame_time = true;
 
     float seconds = static_cast<float>(delta);
     if (!(seconds > 0.0f)) {
@@ -1167,14 +974,14 @@ void tick_animation(double now) noexcept {
         seconds = static_cast<float>(kMaxFrameDeltaSeconds);
     }
 
-    g_state.animation.set_target(g_state.open_spring, g_state.visible ? 1.0f : 0.0f);
-    g_state.animation.set_target(g_state.collapse, g_state.collapsed ? 1.0f : 0.0f);
-    g_state.animation.set_target(g_state.density, g_state.grid_layout ? 0.0f : 1.0f);
-    g_state.animation.tick(seconds);
+    s.animation.set_target(s.open_spring, s.visible ? 1.0f : 0.0f);
+    s.animation.set_target(s.collapse, s.collapsed ? 1.0f : 0.0f);
+    s.animation.set_target(s.density, s.grid_layout ? 0.0f : 1.0f);
+    s.animation.tick(seconds);
 
     // The toast pool advances on the same clock, after the controller so it reads post-tick
     // reveal values: one clock, one tick (§7.4).
-    g_state.notifications.animate(seconds);
+    s.notifications.animate(seconds);
     sync_overlay_request();
     // The in-world layer draws here: inside the live frame, after the animation tick, and it
     // yields to the ClickGUI itself so a crosshair can never land on top of the module cards.
@@ -1186,15 +993,10 @@ void tick_animation(double now) noexcept {
 void render_notifications_layer() noexcept {
     const ImGuiIO& io = ImGui::GetIO();
     const Rect screen{0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y};
-    g_state.notifications.set_screen(screen);
-    g_state.notifications.render(ImGui::GetForegroundDrawList(), screen);
+    State& s = state();
+    s.notifications.set_screen(screen);
+    s.notifications.render(ImGui::GetForegroundDrawList(), screen);
 }
 
-
-// ── In-world overlay, HUD composition and the public overlay API ───────────────────
-//
-// Relocated into an included fragment (same translation unit, so the anonymous-namespace state
-// above stays reachable) because the file had grown past what the editor and reviewers handle
-// comfortably: this half is the per-frame in-world path plus the overlay lifecycle, and the
-// composition above is the ClickGUI chrome.
-#include "ui/gui_overlay.inc"
+} // namespace detail
+} // namespace woke::ui
