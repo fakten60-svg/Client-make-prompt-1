@@ -35,7 +35,7 @@ steps were landing. Where they disagree with the table below, this table is the 
 | 8c — Friend Manager, Client Sound, Safe Walk, Spear set (6 modules) | landed |
 | 8d — Wind Charge CD (the catalogue's last entry) | landed |
 | 9 — Perf + hardening (soak reporter, teardown audit, gui split) | landed |
-| 10 — Polish + release (theme pass, README, v0.1.0) | **next gate** |
+| 10 — Polish + release (README, doc reconcile, release artifact job) | landed |
 
 **Step 7 — visual modules.** Fullbright, HUD (watermark + arraylist), Zoom, Trajectories and Custom
 Crosshair are registered in `lifecycle.cpp` and render through `ui/hud.cpp`; the portable write seam
