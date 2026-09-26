@@ -8,8 +8,15 @@
 #include "core/events.h"
 #include "core/logger.h"
 #include "core/version.h"
+#include "modules/combat/attack_cooldown.h"
+#include "modules/combat/combat_stats.h"
+#include "modules/combat/reach_display.h"
+#include "modules/combat/target_hud.h"
 #include "modules/examples.h"
 #include "modules/game_writes.h"
+#include "modules/mace/mace_stats.h"
+#include "modules/mace/smash_flash.h"
+#include "modules/mace/smash_potential.h"
 #include "modules/misc/clickgui.h"
 #include "modules/misc/config_hotkeys.h"
 #include "modules/misc/panic.h"
@@ -63,6 +70,15 @@ woke::modules::visual::HudModule g_hud_module;
 woke::modules::visual::Zoom g_zoom_module;
 woke::modules::visual::Trajectories g_trajectories_module;
 woke::modules::visual::CustomCrosshair g_crosshair_module;
+// Step 8: Combat and Mace. Registered in the §8 catalogue's order so the cards read "Target HUD,
+// Attack Cooldown, Reach Display, Combat Stats" and "Smash Potential, Mace Stats, Smash Flash".
+woke::modules::combat::TargetHud g_target_hud_module;
+woke::modules::combat::AttackCooldown g_attack_cooldown_module;
+woke::modules::combat::ReachDisplay g_reach_display_module;
+woke::modules::combat::CombatStats g_combat_stats_module;
+woke::modules::mace::SmashPotential g_smash_potential_module;
+woke::modules::mace::MaceStats g_mace_stats_module;
+woke::modules::mace::SmashFlash g_smash_flash_module;
 
 // Module fan-out + keybind subscriptions, owned by the modules boot step (released at shutdown).
 woke::events::Subscription g_keybind_subscription{};
@@ -295,7 +311,10 @@ bool start_modules() noexcept {
         && registry.add(&g_panic_module) && registry.add(&g_config_hotkeys_module)
         && registry.add(&g_fullbright_module) && registry.add(&g_hud_module)
         && registry.add(&g_zoom_module) && registry.add(&g_trajectories_module)
-        && registry.add(&g_crosshair_module);
+        && registry.add(&g_crosshair_module) && registry.add(&g_target_hud_module)
+        && registry.add(&g_attack_cooldown_module) && registry.add(&g_reach_display_module)
+        && registry.add(&g_combat_stats_module) && registry.add(&g_smash_potential_module)
+        && registry.add(&g_mace_stats_module) && registry.add(&g_smash_flash_module);
     if (!registered) {
         WOKE_LOG_ERROR("modules: registration failed");
         return false;

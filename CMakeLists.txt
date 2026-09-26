@@ -49,7 +49,8 @@ set(WOKE_UI_SOURCES
     src/ui/components/traffic_lights.cpp # Step 4: macOS window controls
     src/ui/components/pill_toggle.cpp    # Step 6: the animated Apple-style switch
     src/ui/hud.cpp                       # Step 7: the in-world overlay renderer (portable)
-    src/ui/overlay.cpp)                  # Step 7: the overlay policy predicate (portable)
+    src/ui/overlay.cpp                   # Step 7/8: the overlay policy predicate (portable)
+    src/ui/step8_frame.cpp)              # Step 8: Combat/Mace readout fill (Windows-only)
 
 # Step 6: the widget library. Every component here is portable (no windows.h), which is why the
 # host tests compile them on Linux as well as into the DLL - the widgets are the part of the

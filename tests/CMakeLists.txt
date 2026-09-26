@@ -17,6 +17,7 @@ add_executable(woke_tests
     test_widgets.cpp
     test_visual_modules.cpp
     test_step8_modules.cpp                                    # Step 8: bind persistence, dispatch, action modules
+    test_combat_mace.cpp                                      # Step 8b: the Combat/Mace readouts
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp

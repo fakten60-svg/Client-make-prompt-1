@@ -3,6 +3,7 @@
 #include <jni.h>
 
 #include <atomic>
+#include <cstring>
 
 #include "core/logger.h"
 #include "jni/jni_context.h"
@@ -25,6 +26,10 @@ constexpr const char* kVec3dClass = "class_243";        // Vec3d
 constexpr const char* kGameOptionsClass = "class_315";  // GameOptions
 constexpr const char* kSimpleOptionClass = "class_7172"; // SimpleOption
 constexpr const char* kKeyBindingClass = "class_304";   // KeyBinding
+constexpr const char* kEntityHitResultClass = "class_3966"; // EntityHitResult
+constexpr const char* kTextClass = "class_2561";        // Text
+constexpr const char* kItemStackClass = "class_1799";   // ItemStack
+constexpr const char* kItemClass = "class_1792";        // Item
 
 struct Handles {
     jclass client_class = nullptr;
@@ -72,6 +77,29 @@ struct Handles {
     jfieldID game_options_sprint_key = nullptr;
     jmethodID key_binding_is_pressed = nullptr;
     jmethodID key_binding_set_pressed = nullptr;
+
+    // Combat reads (roadmap step 8). Everything here is a read of the game's own state: the
+    // crosshair target the game resolved, the entity's own health fields, and the player's own
+    // cooldown/interaction numbers.
+    jfieldID client_crosshair_target = nullptr;
+    jmethodID hit_result_get_entity = nullptr;
+    jmethodID entity_get_default_name = nullptr;
+    jmethodID entity_distance_to = nullptr;
+    jmethodID entity_is_alive = nullptr;
+    jmethodID player_cooldown_progress = nullptr;
+    // A method, not the ENTITY_INTERACTION_RANGE static field: the game exposes the range through
+    // getEntityInteractionRange(), and reading a static field through GetFieldID would resolve to
+    // nothing at all. The same reasoning the rest of the table follows.
+    jmethodID player_entity_interaction_range = nullptr;
+    jfieldID entity_fall_distance = nullptr;
+    jmethodID text_as_truncated_string = nullptr;
+
+    // Mace detection (roadmap step 8). The held item is read through the game's own stack, and the
+    // item's translation key is the game's own answer to "which item is this" - no guessing at a
+    // version-specific item comparison.
+    jmethodID living_get_main_hand_stack = nullptr;
+    jmethodID item_stack_get_item = nullptr;
+    jmethodID item_get_translation_key = nullptr;
 };
 
 Handles g_handles{};
@@ -150,6 +178,23 @@ void resolve_handles() noexcept {
     take(g_handles.game_options_sprint_key, jni::field_of(kGameOptionsClass, "sprintKey"));
     take(g_handles.key_binding_is_pressed, jni::method_of(kKeyBindingClass, "isPressed"));
     take(g_handles.key_binding_set_pressed, jni::method_of(kKeyBindingClass, "setPressed"));
+
+    take(g_handles.client_crosshair_target, jni::field_of(kClientClass, "crosshairTarget"));
+    take(g_handles.hit_result_get_entity, jni::method_of(kEntityHitResultClass, "getEntity"));
+    take(g_handles.entity_get_default_name, jni::method_of(kEntityClass, "getDefaultName"));
+    take(g_handles.entity_distance_to, jni::method_of(kEntityClass, "distanceTo"));
+    take(g_handles.entity_is_alive, jni::method_of(kEntityClass, "isAlive"));
+    take(g_handles.player_cooldown_progress,
+        jni::method_of(kPlayerClass, "getAttackCooldownProgress"));
+    take(g_handles.player_entity_interaction_range,
+        jni::method_of(kPlayerClass, "getEntityInteractionRange"));
+    take(g_handles.entity_fall_distance, jni::field_of(kEntityClass, "fallDistance"));
+    take(g_handles.text_as_truncated_string, jni::method_of(kTextClass, "asTruncatedString"));
+    take(g_handles.living_get_main_hand_stack,
+        jni::method_of(kLivingClass, "getMainHandStack"));
+    take(g_handles.item_stack_get_item, jni::method_of(kItemStackClass, "getItem"));
+    take(g_handles.item_get_translation_key,
+        jni::method_of(kItemClass, "getTranslationKey"));
 }
 
 // True when the last call left no pending exception. A pending exception would poison every
@@ -666,6 +711,201 @@ bool set_sprint_key_pressed(bool pressed) noexcept {
 
     env->CallVoidMethod(binding, g_handles.key_binding_set_pressed, pressed ? JNI_TRUE : JNI_FALSE);
     return no_pending_exception(env);
+}
+
+// ── Combat and mace reads (roadmap step 8) ───────────────────────────────────────
+
+// Copies the entity's display name out of JNI before the local Text reference dies. A missing
+// name is a zero-length buffer, never a crash: the HUD shows an unnamed plate.
+void read_entity_name(JNIEnv* env, jobject entity, TargetInfo& out) noexcept {
+    jobject name_text =
+        env->CallObjectMethod(entity, g_handles.entity_get_default_name);
+    if (name_text == nullptr || !no_pending_exception(env)
+        || g_handles.text_as_truncated_string == nullptr) {
+        return;
+    }
+    // 48 characters covers any nametag the HUD would print anyway; the chip truncates visually
+    // at roughly the same length.
+    jstring truncated = static_cast<jstring>(env->CallObjectMethod(
+        name_text, g_handles.text_as_truncated_string, static_cast<jint>(48)));
+    if (truncated == nullptr || !no_pending_exception(env)) {
+        return;
+    }
+    const char* utf8 = env->GetStringUTFChars(truncated, nullptr);
+    if (utf8 != nullptr) {
+        out.name.assign(utf8);
+        env->ReleaseStringUTFChars(truncated, utf8);
+    }
+}
+
+Maybe<TargetInfo> crosshair_target() noexcept {
+    if (!ready() || g_handles.client_crosshair_target == nullptr
+        || g_handles.hit_result_get_entity == nullptr) {
+        return missing<TargetInfo>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject hit = env->GetObjectField(client_ref(), g_handles.client_crosshair_target);
+    if (hit == nullptr || !no_pending_exception(env)) {
+        return missing<TargetInfo>(); // no crosshair hit at all: a block, or the sky
+    }
+
+    // A crosshair hit may be a block, an entity or a miss. getEntity() exists only on
+    // EntityHitResult, so the type is checked *before* the call: invoking a method id that the
+    // instance's class does not declare is undefined, not a returned null.
+    const jclass entity_hit_class = jni::class_of(kEntityHitResultClass);
+    if (entity_hit_class == nullptr || env->IsInstanceOf(hit, entity_hit_class) != JNI_TRUE) {
+        return missing<TargetInfo>();
+    }
+
+    jobject entity = env->CallObjectMethod(hit, g_handles.hit_result_get_entity);
+    if (entity == nullptr || !no_pending_exception(env)) {
+        return missing<TargetInfo>();
+    }
+    if (g_handles.entity_is_alive != nullptr) {
+        const jboolean alive = env->CallBooleanMethod(entity, g_handles.entity_is_alive);
+        if (!no_pending_exception(env) || alive == JNI_FALSE) {
+            return missing<TargetInfo>();
+        }
+    }
+
+    TargetInfo info{};
+
+    // A LivingEntity answers health; anything else (armor stand, boat) has no such method, and
+    // the read degrades to a name-and-distance card rather than a wrong number.
+    if (g_handles.living_get_health != nullptr) {
+        const jfloat health = env->CallFloatMethod(entity, g_handles.living_get_health);
+        if (no_pending_exception(env)) {
+            info.health = static_cast<float>(health);
+        }
+        const jfloat max_health = env->CallFloatMethod(entity, g_handles.living_get_max_health);
+        if (no_pending_exception(env)) {
+            info.max_health = static_cast<float>(max_health);
+        }
+        const jfloat absorption =
+            env->CallFloatMethod(entity, g_handles.living_get_absorption);
+        if (no_pending_exception(env)) {
+            info.absorption = static_cast<float>(absorption);
+        }
+    }
+
+    if (g_handles.entity_distance_to != nullptr) {
+        jobject player = player_object(env);
+        if (player != nullptr) {
+            const jfloat distance =
+                env->CallFloatMethod(entity, g_handles.entity_distance_to, player);
+            if (no_pending_exception(env)) {
+                info.distance = static_cast<float>(distance);
+            }
+        }
+    }
+
+    read_entity_name(env, entity, info);
+    info.valid = true;
+    return Maybe<TargetInfo>::of(info);
+}
+
+Maybe<float> attack_cooldown_progress() noexcept {
+    if (!ready() || g_handles.player_cooldown_progress == nullptr) {
+        return missing<float>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return missing<float>();
+    }
+
+    // (0.0f) reads "at the last completed tick", the same value the game's own HUD bar uses.
+    const jfloat progress =
+        env->CallFloatMethod(player, g_handles.player_cooldown_progress, 0.0f);
+    if (!no_pending_exception(env)) {
+        return missing<float>();
+    }
+    return Maybe<float>::of(static_cast<float>(progress));
+}
+
+Maybe<double> player_fall_distance() noexcept {
+    if (!ready() || g_handles.entity_fall_distance == nullptr) {
+        return missing<double>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return missing<double>();
+    }
+
+    const jdouble distance = env->GetDoubleField(player, g_handles.entity_fall_distance);
+    if (!no_pending_exception(env) || distance < 0.0) {
+        return missing<double>();
+    }
+    return Maybe<double>::of(static_cast<double>(distance));
+}
+
+Maybe<float> player_attack_range() noexcept {
+    if (!ready() || g_handles.player_entity_interaction_range == nullptr) {
+        return missing<float>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return missing<float>();
+    }
+
+    // getEntityInteractionRange() returns the game's own attack reach (the base 3.0 blocks plus
+    // any attribute modifiers the player is carrying).
+    const jdouble range =
+        env->CallDoubleMethod(player, g_handles.player_entity_interaction_range);
+    if (!no_pending_exception(env)) {
+        return missing<float>();
+    }
+    return Maybe<float>::of(static_cast<float>(range));
+}
+
+// "Is the mace in my main hand?" answered by the game itself: the held stack's item translation
+// key is compared to the mace's own key. A missing handle or a null stack is `false`, never a
+// guess - the mace counters then simply stay at zero, which is the documented degradation.
+Maybe<bool> holding_mace() noexcept {
+    if (!ready() || g_handles.living_get_main_hand_stack == nullptr
+        || g_handles.item_stack_get_item == nullptr
+        || g_handles.item_get_translation_key == nullptr) {
+        return missing<bool>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return missing<bool>();
+    }
+
+    jobject stack = env->CallObjectMethod(player, g_handles.living_get_main_hand_stack);
+    if (stack == nullptr || !no_pending_exception(env)) {
+        return Maybe<bool>::of(false); // an empty hand is not the mace
+    }
+    jobject item = env->CallObjectMethod(stack, g_handles.item_stack_get_item);
+    if (item == nullptr || !no_pending_exception(env)) {
+        return Maybe<bool>::of(false);
+    }
+    const auto key = static_cast<jstring>(
+        env->CallObjectMethod(item, g_handles.item_get_translation_key));
+    if (key == nullptr || !no_pending_exception(env)) {
+        return Maybe<bool>::of(false);
+    }
+
+    const char* utf8 = env->GetStringUTFChars(key, nullptr);
+    if (utf8 == nullptr) {
+        return missing<bool>();
+    }
+    const bool is_mace = std::strcmp(utf8, "item.minecraft.mace") == 0;
+    env->ReleaseStringUTFChars(key, utf8);
+    return Maybe<bool>::of(is_mace);
 }
 
 } // namespace woke::game

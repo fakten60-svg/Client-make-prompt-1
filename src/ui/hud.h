@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 #include <imgui.h>
 
@@ -47,6 +48,12 @@ struct TrajectoryStyle {
     Rgba color = util::from_hex(0x0A84FF);
 };
 
+// The shared accent palette (accent, white, green, red, cyan) for the step-8 modules whose
+// colour setting is an enum - the Attack Cooldown bar and the Smash Flash. Index-matched to
+// those modules' label tables; an out-of-range index falls back to the accent so a bad config
+// value cannot draw an invisible element.
+[[nodiscard]] Rgba accent_color_for(std::size_t index) noexcept;
+
 // One frame's worth of overlay input, resolved by the caller. Plain data, so the renderer is a
 // pure function of it and the host tests can construct any case directly.
 struct Frame {
@@ -63,6 +70,50 @@ struct Frame {
     // module header to format a number.
     bool velocity_chip = false;
     std::size_t velocity_units = 0;
+
+    // ── Step 8: Combat and Mace readouts ────────────────────────────────────────
+    //
+    // Everything below follows the velocity chip's shape: the module decides *that* and *how*,
+    // the frame builder supplies the live values (already read on the game thread), and the
+    // renderer is a pure function of the frame. Reads gate on `world_live` like the trajectory's
+    // guard, so a stale number can never outlive the world it came from - except the two
+    // counter chips, which are session data that stay meaningful with no world at all.
+
+    // Target HUD (Combat): the card about the entity under the crosshair.
+    bool target_card = false;
+    std::size_t target_position = 0; // 0 = under the crosshair, 1 = left chip column
+    float target_scale = 1.0f;
+    game::TargetInfo target{};
+
+    // Attack Cooldown (Combat): progress 0..1 from the game's own cooldown clock.
+    bool cooldown_bar = false;
+    std::size_t cooldown_style = 0; // 0 = bar under the crosshair, 1 = arc around it
+    Rgba cooldown_color = util::from_hex(0x0A84FF);
+    float cooldown_progress = 0.0f;
+
+    // Reach Display (Combat): the player's own entity interaction range.
+    bool reach_chip = false;
+    float reach_blocks = 3.0f;
+
+    // Session counters. Drawn with or without a live world: they are the session's data.
+    bool combat_counters = false;
+    std::uint32_t counter_swings = 0;
+    std::uint32_t counter_hits = 0;
+    std::uint32_t counter_wasted = 0;
+
+    bool mace_counters = false;
+    std::uint32_t mace_swing_count = 0;
+    std::uint32_t mace_hit_count = 0;
+    std::uint32_t mace_smash_count = 0;
+
+    // Smash Potential (Mace): projected damage from the player's current fall.
+    bool smash_chip = false;
+    double fall_distance = 0.0;
+    bool smash_enhanced = false;
+
+    // Smash Flash (Mace): the local edge flash when a smash is ready.
+    bool smash_flash = false;
+    float flash_intensity = 0.5f;
 
     bool crosshair = false;
     CrosshairStyle crosshair_style{};

@@ -12,7 +12,8 @@
 namespace woke::ui::overlay {
 
 // True when an enabled overlay module would emit something this frame: the HUD's watermark or
-// arraylist, the custom crosshair, or a trajectory prediction with a live player view.
+// arraylist, the custom crosshair, a trajectory prediction with a live player view, or any of the
+// step-8 Combat/Mace readouts (whose counter chips draw even with no world loaded).
 [[nodiscard]] bool wanted() noexcept;
 
 } // namespace woke::ui::overlay
