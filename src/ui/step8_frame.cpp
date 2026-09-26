@@ -4,6 +4,7 @@
 // every module setting consulted here is a plain value read.
 
 #include <cstddef>
+#include <cstring>
 
 #include "core/build_config.h"
 #include "core/event_bus.h"
@@ -16,7 +17,12 @@
 #include "modules/mace/smash_damage.h"
 #include "modules/mace/smash_flash.h"
 #include "modules/mace/smash_potential.h"
+#include "modules/misc/friend_manager.h"
 #include "modules/module_manager.h"
+#include "modules/movement/safe_walk.h"
+#include "modules/spear/loyalty_hud.h"
+#include "modules/spear/riptide_indicator.h"
+#include "modules/spear/trident_cooldown.h"
 
 #if WOKE_HAVE_JNI
 #include "jni/game_instance.h"
@@ -32,11 +38,17 @@ using modules::combat::TargetHud;
 using modules::mace::MaceStats;
 using modules::mace::SmashFlash;
 using modules::mace::SmashPotential;
+using modules::misc::FriendManager;
+using modules::movement::SafeWalk;
+using modules::spear::LoyaltyHud;
+using modules::spear::RiptideIndicator;
+using modules::spear::TridentCooldown;
 
 namespace mace = modules::mace;
 
 // The overlay module pointers, re-resolved on the registry's size-change cadence exactly like
-// gui.cpp's own cache. They are non-const because the counters are mutated by the swing observer.
+// gui.cpp's own cache. They are non-const because the counters and the loyalty state machine are
+// mutated by the swing observer and the per-frame observation.
 struct Step8Modules {
     TargetHud* target_hud = nullptr;
     AttackCooldown* cooldown = nullptr;
@@ -45,6 +57,11 @@ struct Step8Modules {
     SmashPotential* smash = nullptr;
     SmashFlash* flash = nullptr;
     MaceStats* mace_stats = nullptr;
+    FriendManager* friends = nullptr;
+    SafeWalk* safe_walk = nullptr;
+    RiptideIndicator* riptide = nullptr;
+    TridentCooldown* trident = nullptr;
+    LoyaltyHud* loyalty = nullptr;
     std::size_t resolved_count = static_cast<std::size_t>(-1);
 };
 
@@ -68,9 +85,37 @@ void resolve_step8_modules() noexcept {
     g_step8.smash = dynamic_cast<SmashPotential*>(modules::manager().find("Smash Potential"));
     g_step8.flash = dynamic_cast<SmashFlash*>(modules::manager().find("Smash Flash"));
     g_step8.mace_stats = dynamic_cast<MaceStats*>(modules::manager().find("Mace Stats"));
+    g_step8.friends = dynamic_cast<FriendManager*>(modules::manager().find("Friend Manager"));
+    g_step8.safe_walk = dynamic_cast<SafeWalk*>(modules::manager().find("Safe Walk"));
+    g_step8.riptide =
+        dynamic_cast<RiptideIndicator*>(modules::manager().find("Riptide Indicator"));
+    g_step8.trident =
+        dynamic_cast<TridentCooldown*>(modules::manager().find("Trident Cooldown"));
+    g_step8.loyalty = dynamic_cast<LoyaltyHud*>(modules::manager().find("Loyalty HUD"));
+}
+
+// The two chips that need no game state: the friend list size and the safe-walk engagement are
+// module facts, so they are filled even on a build without the JVM bridge.
+void read_local_chips(hud::Frame& frame) noexcept {
+    if (g_step8.friends != nullptr && g_step8.friends->enabled()) {
+        frame.friend_chip = true;
+        frame.friend_count = static_cast<std::uint32_t>(g_step8.friends->count());
+    }
+    if (g_step8.safe_walk != nullptr && g_step8.safe_walk->enabled()) {
+        frame.safe_walk_chip = true;
+        frame.safe_walk_engaged = g_step8.safe_walk->engaged();
+    }
 }
 
 #if WOKE_HAVE_JNI
+
+// The trident's own translation key. Comparing the item's own key is the game answering "which item
+// is this", instead of the client guessing at a version-specific item class.
+constexpr const char* kTridentKey = "item.minecraft.trident";
+
+[[nodiscard]] bool is_trident_key(const game::FixedName& key) noexcept {
+    return std::strcmp(key.c_str(), kTridentKey) == 0;
+}
 
 // One observed left-button press, recorded against the enabled counters. Order matters: the hit
 // extends the swing that was just counted, exactly as the vanilla attack does, and a swing below
@@ -211,12 +256,63 @@ void read_counters(hud::Frame& frame) noexcept {
     }
 }
 
+void read_riptide(hud::Frame& frame, const game::Maybe<game::FixedName>& held) noexcept {
+    if (g_step8.riptide == nullptr || !g_step8.riptide->enabled()) {
+        return;
+    }
+    const bool trident = held.valid && is_trident_key(held.value);
+    if (g_step8.riptide->requires_trident() && !trident) {
+        return; // the chip is a trident fact; no trident, no chip
+    }
+    const auto active = game::riptide_active();
+    if (!active.valid) {
+        return;
+    }
+    frame.riptide_chip = true;
+    frame.riptide_engaged = active.value;
+    frame.riptide_trident = trident;
+    frame.world_live = true;
+}
+
+void read_trident(hud::Frame& frame, const game::Maybe<game::FixedName>& held) noexcept {
+    if (g_step8.trident == nullptr || !g_step8.trident->enabled()) {
+        return;
+    }
+    if (!held.valid || !is_trident_key(held.value)) {
+        return; // only while a trident is held: the chip is about the trident
+    }
+    const auto progress = game::attack_cooldown_progress();
+    if (!progress.valid) {
+        return;
+    }
+    frame.trident_chip = true;
+    frame.trident_progress = progress.value;
+    frame.trident_color = hud::accent_color_for(g_step8.trident->color_index());
+    frame.world_live = true;
+}
+
+void read_loyalty(hud::Frame& frame, const game::Maybe<game::FixedName>& held) noexcept {
+    if (g_step8.loyalty == nullptr || !g_step8.loyalty->enabled()) {
+        return;
+    }
+    if (!held.valid) {
+        return; // an unresolved held-item read must not be mistaken for "the trident is out"
+    }
+    g_step8.loyalty->observe(static_cast<double>(frame.delta_seconds), is_trident_key(held.value));
+    frame.loyalty_chip = true;
+    frame.loyalty_tracking = g_step8.loyalty->tracking();
+    frame.loyalty_seconds = g_step8.loyalty->elapsed();
+    frame.loyalty_last_trip = g_step8.loyalty->last_trip();
+    frame.world_live = true;
+}
+
 #endif // WOKE_HAVE_JNI
 
 } // namespace
 
 void fill_step8_readouts(hud::Frame& frame) noexcept {
     resolve_step8_modules();
+    read_local_chips(frame);
 #if WOKE_HAVE_JNI
     ensure_mouse_subscription();
     read_target_card(frame);
@@ -225,8 +321,13 @@ void fill_step8_readouts(hud::Frame& frame) noexcept {
     read_smash(frame);
     read_smash_flash(frame);
     read_counters(frame);
-#else
-    (void)frame;
+
+    // One held-item read per frame, shared by the three spear chips: three JNI calls for one fact
+    // would be waste, and the reads must agree with each other within a frame.
+    const game::Maybe<game::FixedName> held = game::held_item_key();
+    read_riptide(frame, held);
+    read_trident(frame, held);
+    read_loyalty(frame, held);
 #endif
 }
 

@@ -17,12 +17,18 @@
 #include "modules/mace/mace_stats.h"
 #include "modules/mace/smash_flash.h"
 #include "modules/mace/smash_potential.h"
+#include "modules/misc/client_sound.h"
+#include "modules/misc/friend_manager.h"
 #include "modules/misc/clickgui.h"
 #include "modules/misc/config_hotkeys.h"
 #include "modules/misc/panic.h"
 #include "modules/module_manager.h"
 #include "modules/movement/auto_sprint.h"
+#include "modules/movement/safe_walk.h"
 #include "modules/movement/velocity_display.h"
+#include "modules/spear/loyalty_hud.h"
+#include "modules/spear/riptide_indicator.h"
+#include "modules/spear/trident_cooldown.h"
 #include "modules/visual/custom_crosshair.h"
 #include "modules/visual/fullbright.h"
 #include "modules/visual/hud_module.h"
@@ -79,6 +85,13 @@ woke::modules::combat::CombatStats g_combat_stats_module;
 woke::modules::mace::SmashPotential g_smash_potential_module;
 woke::modules::mace::MaceStats g_mace_stats_module;
 woke::modules::mace::SmashFlash g_smash_flash_module;
+// Step 8c: Misc, Movement and the Spear set.
+woke::modules::misc::FriendManager g_friend_manager_module;
+woke::modules::misc::ClientSound g_client_sound_module;
+woke::modules::movement::SafeWalk g_safe_walk_module;
+woke::modules::spear::RiptideIndicator g_riptide_module;
+woke::modules::spear::TridentCooldown g_trident_module;
+woke::modules::spear::LoyaltyHud g_loyalty_module;
 
 // Module fan-out + keybind subscriptions, owned by the modules boot step (released at shutdown).
 woke::events::Subscription g_keybind_subscription{};
@@ -306,6 +319,12 @@ bool start_modules() noexcept {
     (void)woke::modules::set_game_writes(&woke::jni::jni_game_writes());
 #endif
 
+#if defined(_WIN32)
+    // The Client Sound audio backend, over the recording default. A build without it keeps the
+    // recorder, so a cue is still reported rather than silently dropped.
+    woke::modules::misc::install_client_sound_backend();
+#endif
+
     const bool registered = registry.add(&g_sprint_module) && registry.add(&g_auto_sprint_module)
         && registry.add(&g_velocity_display_module) && registry.add(&g_clickgui_module)
         && registry.add(&g_panic_module) && registry.add(&g_config_hotkeys_module)
@@ -314,7 +333,10 @@ bool start_modules() noexcept {
         && registry.add(&g_crosshair_module) && registry.add(&g_target_hud_module)
         && registry.add(&g_attack_cooldown_module) && registry.add(&g_reach_display_module)
         && registry.add(&g_combat_stats_module) && registry.add(&g_smash_potential_module)
-        && registry.add(&g_mace_stats_module) && registry.add(&g_smash_flash_module);
+        && registry.add(&g_mace_stats_module) && registry.add(&g_smash_flash_module)
+        && registry.add(&g_friend_manager_module) && registry.add(&g_client_sound_module)
+        && registry.add(&g_safe_walk_module) && registry.add(&g_riptide_module)
+        && registry.add(&g_trident_module) && registry.add(&g_loyalty_module);
     if (!registered) {
         WOKE_LOG_ERROR("modules: registration failed");
         return false;

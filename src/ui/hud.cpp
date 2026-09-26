@@ -324,6 +324,62 @@ void draw_smash_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
     column_y += kRowAdvance;
 }
 
+// ── Step 8c: Misc / Movement / Spear chips ────────────────────────────────────
+
+void draw_friend_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    util::FixedString<32> text;
+    text.format("friends %u", frame.friend_count);
+    const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+    draw_chip(draw_list, plate, text.c_str(), theme::color::kAccent, alpha);
+    column_y += kRowAdvance;
+}
+
+void draw_safe_walk_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    util::FixedString<32> text;
+    text.format("safe walk %s", frame.safe_walk_engaged ? "ON" : "off");
+    const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+    draw_chip(draw_list, plate, text.c_str(),
+        frame.safe_walk_engaged ? theme::color::kTrafficGreen : theme::color::kTextMuted, alpha);
+    column_y += kRowAdvance;
+}
+
+void draw_riptide_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    const char* state = frame.riptide_engaged
+        ? "ACTIVE"
+        : (frame.riptide_trident ? "READY" : "no trident");
+    util::FixedString<40> text;
+    text.format("riptide %s", state);
+    const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+    draw_chip(draw_list, plate, text.c_str(),
+        frame.riptide_engaged ? theme::color::kAccentAlt : theme::color::kAccent, alpha);
+    column_y += kRowAdvance;
+}
+
+void draw_trident_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    util::FixedString<32> text;
+    text.format("trident %.0f%%", static_cast<double>(util::clamp01(frame.trident_progress) * 100.0f));
+    const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+    draw_chip(draw_list, plate, text.c_str(), frame.trident_color, alpha);
+    column_y += kRowAdvance;
+}
+
+void draw_loyalty_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    util::FixedString<48> text;
+    if (frame.loyalty_tracking) {
+        text.format("loyalty %.1fs out", frame.loyalty_seconds);
+    } else {
+        text.format("loyalty trip %.1fs", frame.loyalty_last_trip);
+    }
+    const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+    draw_chip(draw_list, plate, text.c_str(), theme::color::kTrafficYellow, alpha);
+    column_y += kRowAdvance;
+}
+
 // Four translucent edge quads, the shadow's inverse: a flash *is* an unshadow. Drawn on the
 // same frame, so it needs no second pass and costs eight vertices.
 void draw_smash_flash(ImDrawList* draw_list, const Frame& frame, float alpha) noexcept {
@@ -470,9 +526,14 @@ bool active(const Frame& frame) noexcept {
     // the step-8 set gates on world_live like the trajectory does.
     const bool combat_reads = frame.target_card || frame.cooldown_bar || frame.reach_chip
         || frame.smash_chip || frame.smash_flash;
+    // The step-8c spear chips are game reads (a trident/riptide state), so they gate on world_live
+    // like the trajectory; the friend and safe-walk chips are local/session facts and do not.
+    const bool spear_reads = frame.riptide_chip || frame.trident_chip || frame.loyalty_chip;
+    const bool local_chips = frame.friend_chip || frame.safe_walk_chip;
     return frame.watermark || frame.arraylist || frame.crosshair
         || (frame.velocity_chip && frame.world_live) || (frame.trajectory && frame.world_live)
-        || (combat_reads && frame.world_live) || frame.combat_counters || frame.mace_counters;
+        || (combat_reads && frame.world_live) || frame.combat_counters || frame.mace_counters
+        || local_chips || (spear_reads && frame.world_live);
 }
 
 void render(ImDrawList* draw_list, const Frame& frame) noexcept {
@@ -515,6 +576,21 @@ void render(ImDrawList* draw_list, const Frame& frame) noexcept {
     }
     if (frame.combat_counters || frame.mace_counters) {
         draw_counter_chip(draw_list, frame, alpha, column_y);
+    }
+    if (frame.friend_chip) {
+        draw_friend_chip(draw_list, frame, alpha, column_y);
+    }
+    if (frame.safe_walk_chip) {
+        draw_safe_walk_chip(draw_list, frame, alpha, column_y);
+    }
+    if (frame.riptide_chip && frame.world_live) {
+        draw_riptide_chip(draw_list, frame, alpha, column_y);
+    }
+    if (frame.trident_chip && frame.world_live) {
+        draw_trident_chip(draw_list, frame, alpha, column_y);
+    }
+    if (frame.loyalty_chip && frame.world_live) {
+        draw_loyalty_chip(draw_list, frame, alpha, column_y);
     }
     if (frame.arraylist) {
         draw_arraylist(draw_list, frame, alpha);

@@ -73,6 +73,9 @@ void build_hud_frame(hud::Frame& frame) noexcept {
     frame.screen = Rect{0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y};
     frame.frames_per_second = hooks::game_thread::stats().frames_per_second;
     frame.alpha = 1.0f;
+    // The frame's own delta: the Loyalty HUD's throw timer advances on this, so it follows the real
+    // frame rate instead of assuming one (§7.4).
+    frame.delta_seconds = io.DeltaTime;
 
     if (g_overlay.hud != nullptr && g_overlay.hud->enabled()) {
         frame.watermark = g_overlay.hud->watermark();

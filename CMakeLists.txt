@@ -36,7 +36,9 @@ set(WOKE_CORE_SOURCES
     src/core/event_bus.cpp           # Step 3: fixed-slot pub/sub (portable)
     src/core/config.cpp              # Step 5: settings persistence over nlohmann (portable)
     src/modules/module_manager.cpp   # Step 5: module registry, buckets, keybind routing
-    src/modules/game_writes.cpp)     # Step 7: the recording client-write backend (portable)
+    src/modules/game_writes.cpp      # Step 7: the recording client-write backend (portable)
+    src/modules/client_sound.cpp     # Step 8c: the Client Sound sink storage (portable)
+    src/modules/client_sound_win32.cpp) # Step 8c: the Win32 PlaySound backend (Windows-only)
 
 # Step 4 builds on the portable half of the UI too: the curves, the animation engine and the theme
 # tokens carry no Windows dependency, so they are compiled by the host tests on Linux as well.
@@ -102,7 +104,7 @@ if(WIN32)
     # split is what lets the host tests render the draw layer headlessly on Linux.
     target_link_libraries(woke PRIVATE
         imgui imgui_backends minhook nlohmann_json
-        opengl32 user32 gdi32 shell32 ole32 dwmapi psapi dxgi d3d11)
+        opengl32 user32 gdi32 shell32 ole32 dwmapi psapi dxgi d3d11 winmm)
 
     # Spelled as two explicit branches rather than $<BOOL:...>: lifecycle.cpp switches its
     # boot steps on this macro, and an empty generator-expression operand is a needless

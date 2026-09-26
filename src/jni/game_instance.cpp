@@ -75,6 +75,7 @@ struct Handles {
     // The sprint key (roadmap step 8). The key's held state is a plain boolean on KeyBinding, so
     // unlike a SimpleOption write there is nothing to box.
     jfieldID game_options_sprint_key = nullptr;
+    jfieldID game_options_sneak_key = nullptr;
     jmethodID key_binding_is_pressed = nullptr;
     jmethodID key_binding_set_pressed = nullptr;
 
@@ -100,6 +101,10 @@ struct Handles {
     jmethodID living_get_main_hand_stack = nullptr;
     jmethodID item_stack_get_item = nullptr;
     jmethodID item_get_translation_key = nullptr;
+
+    // Spear reads (roadmap step 8). isUsingRiptide() is the game's own "a riptide is running" flag;
+    // the held-item key (above) tells the client which weapon that is.
+    jmethodID living_is_using_riptide = nullptr;
 };
 
 Handles g_handles{};
@@ -176,6 +181,7 @@ void resolve_handles() noexcept {
     take(g_handles.simple_option_set_value, jni::method_of(kSimpleOptionClass, "setValue"));
 
     take(g_handles.game_options_sprint_key, jni::field_of(kGameOptionsClass, "sprintKey"));
+    take(g_handles.game_options_sneak_key, jni::field_of(kGameOptionsClass, "sneakKey"));
     take(g_handles.key_binding_is_pressed, jni::method_of(kKeyBindingClass, "isPressed"));
     take(g_handles.key_binding_set_pressed, jni::method_of(kKeyBindingClass, "setPressed"));
 
@@ -195,6 +201,7 @@ void resolve_handles() noexcept {
     take(g_handles.item_stack_get_item, jni::method_of(kItemStackClass, "getItem"));
     take(g_handles.item_get_translation_key,
         jni::method_of(kItemClass, "getTranslationKey"));
+    take(g_handles.living_is_using_riptide, jni::method_of(kLivingClass, "isUsingRiptide"));
 }
 
 // True when the last call left no pending exception. A pending exception would poison every
@@ -281,21 +288,30 @@ bool write_option(jfieldID option_field, float value) noexcept {
     return no_pending_exception(env);
 }
 
-// client.options.sprintKey is a KeyBinding object; both the read and the write go through it, so
-// the client's own input handling sees exactly what it would see from the keyboard.
-jobject sprint_binding(JNIEnv* env) noexcept {
-    if (g_handles.client_options == nullptr || g_handles.game_options_sprint_key == nullptr) {
+// A KeyBinding object on the live GameOptions, addressed by its field id. Both the read and the
+// write go through the binding the player's own keyboard drives, so the client's input handling
+// sees exactly what it would see from the keyboard.
+jobject option_key_binding(JNIEnv* env, jfieldID field) noexcept {
+    if (g_handles.client_options == nullptr || field == nullptr) {
         return nullptr;
     }
     jobject options = env->GetObjectField(client_ref(), g_handles.client_options);
     if (options == nullptr) {
         return nullptr;
     }
-    jobject binding = env->GetObjectField(options, g_handles.game_options_sprint_key);
+    jobject binding = env->GetObjectField(options, field);
     if (binding == nullptr || !no_pending_exception(env)) {
         return nullptr;
     }
     return binding;
+}
+
+jobject sprint_binding(JNIEnv* env) noexcept {
+    return option_key_binding(env, g_handles.game_options_sprint_key);
+}
+
+jobject sneak_binding(JNIEnv* env) noexcept {
+    return option_key_binding(env, g_handles.game_options_sneak_key);
 }
 
 } // namespace
@@ -713,6 +729,45 @@ bool set_sprint_key_pressed(bool pressed) noexcept {
     return no_pending_exception(env);
 }
 
+// ── The sneak key (roadmap step 8: Safe Walk) ─────────────────────────────────────
+//
+// Exactly the sprint key's shape, on the GameOptions sneak binding: the game's own edge protection
+// is what "safe walk" means, so holding its key is the whole feature.
+Maybe<bool> sneak_key_pressed() noexcept {
+    if (!ready() || g_handles.key_binding_is_pressed == nullptr) {
+        return missing<bool>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject binding = sneak_binding(env);
+    if (binding == nullptr) {
+        return missing<bool>();
+    }
+
+    const jboolean pressed = env->CallBooleanMethod(binding, g_handles.key_binding_is_pressed);
+    if (!no_pending_exception(env)) {
+        return missing<bool>();
+    }
+    return Maybe<bool>::of(pressed != JNI_FALSE);
+}
+
+bool set_sneak_key_pressed(bool pressed) noexcept {
+    if (!ready() || g_handles.key_binding_set_pressed == nullptr) {
+        return false;
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject binding = sneak_binding(env);
+    if (binding == nullptr) {
+        return false;
+    }
+
+    env->CallVoidMethod(binding, g_handles.key_binding_set_pressed, pressed ? JNI_TRUE : JNI_FALSE);
+    return no_pending_exception(env);
+}
+
 // ── Combat and mace reads (roadmap step 8) ───────────────────────────────────────
 
 // Copies the entity's display name out of JNI before the local Text reference dies. A missing
@@ -906,6 +961,68 @@ Maybe<bool> holding_mace() noexcept {
     const bool is_mace = std::strcmp(utf8, "item.minecraft.mace") == 0;
     env->ReleaseStringUTFChars(key, utf8);
     return Maybe<bool>::of(is_mace);
+}
+
+// The held item's own translation key, e.g. "item.minecraft.trident". A bounded copy, so the caller
+// compares against a known key instead of the client guessing at a version-specific item class.
+Maybe<FixedName> held_item_key() noexcept {
+    if (!ready() || g_handles.living_get_main_hand_stack == nullptr
+        || g_handles.item_stack_get_item == nullptr
+        || g_handles.item_get_translation_key == nullptr) {
+        return missing<FixedName>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return missing<FixedName>();
+    }
+    jobject stack = env->CallObjectMethod(player, g_handles.living_get_main_hand_stack);
+    if (stack == nullptr || !no_pending_exception(env)) {
+        // An empty hand is a *valid* answer with an empty key: the caller distinguishes "not holding
+        // the item" from "the read is unavailable", which matters for the loyalty observation.
+        return Maybe<FixedName>::of(FixedName{});
+    }
+    jobject item = env->CallObjectMethod(stack, g_handles.item_stack_get_item);
+    if (item == nullptr || !no_pending_exception(env)) {
+        return missing<FixedName>();
+    }
+    const auto key = static_cast<jstring>(
+        env->CallObjectMethod(item, g_handles.item_get_translation_key));
+    if (key == nullptr || !no_pending_exception(env)) {
+        return missing<FixedName>();
+    }
+
+    const char* utf8 = env->GetStringUTFChars(key, nullptr);
+    if (utf8 == nullptr) {
+        return missing<FixedName>();
+    }
+    FixedName name;
+    name.assign(utf8);
+    env->ReleaseStringUTFChars(key, utf8);
+    return Maybe<FixedName>::of(name);
+}
+
+// The game's own "a riptide is in progress" flag. Read-only, and the trident-held check is the
+// caller's (through held_item_key), so this stays one fact about the player.
+Maybe<bool> riptide_active() noexcept {
+    if (!ready() || g_handles.living_is_using_riptide == nullptr) {
+        return missing<bool>();
+    }
+
+    JNIEnv* env = jni::current_env();
+    jni::ScopedLocalFrame frame;
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return missing<bool>();
+    }
+
+    const jboolean active = env->CallBooleanMethod(player, g_handles.living_is_using_riptide);
+    if (!no_pending_exception(env)) {
+        return missing<bool>();
+    }
+    return Maybe<bool>::of(active != JNI_FALSE);
 }
 
 } // namespace woke::game

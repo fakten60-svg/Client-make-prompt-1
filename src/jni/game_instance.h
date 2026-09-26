@@ -80,6 +80,13 @@ void shutdown() noexcept;
 // empty hand is `false`; the mace counters then stay at zero instead of counting the wrong item.
 [[nodiscard]] Maybe<bool> holding_mace() noexcept;
 
+// The held item's own translation key (e.g. "item.minecraft.trident"), bounded and copied out of
+// JNI. The caller compares it against a known key, so no version-specific item class is guessed.
+[[nodiscard]] Maybe<FixedName> held_item_key() noexcept;
+
+// The game's own "a riptide is in progress" flag (roadmap step 8: the Spear set).
+[[nodiscard]] Maybe<bool> riptide_active() noexcept;
+
 // ── The sprint key (roadmap step 8) ──────────────────────────────────────────────────
 //
 // The client's sprint key binding, read and written through the game's own KeyBinding, so vanilla
@@ -88,5 +95,9 @@ void shutdown() noexcept;
 // synthesizes a packet, and releasing restores whatever the user's own key was doing.
 [[nodiscard]] Maybe<bool> sprint_key_pressed() noexcept;
 [[nodiscard]] bool set_sprint_key_pressed(bool pressed) noexcept;
+
+// The same shape for the sneak key (roadmap step 8: Safe Walk).
+[[nodiscard]] Maybe<bool> sneak_key_pressed() noexcept;
+[[nodiscard]] bool set_sneak_key_pressed(bool pressed) noexcept;
 
 } // namespace woke::game

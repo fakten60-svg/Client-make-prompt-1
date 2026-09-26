@@ -18,6 +18,7 @@ add_executable(woke_tests
     test_visual_modules.cpp
     test_step8_modules.cpp                                    # Step 8: bind persistence, dispatch, action modules
     test_combat_mace.cpp                                      # Step 8b: the Combat/Mace readouts
+    test_spear_misc.cpp                                       # Step 8c: the Misc/Movement/Spear readouts
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp
@@ -34,6 +35,7 @@ add_executable(woke_tests
     ${CMAKE_SOURCE_DIR}/src/ui/components/search_bar.cpp          # Step 6: the module filter
     ${CMAKE_SOURCE_DIR}/src/ui/notifications.cpp                  # Step 6: the toast pool
     ${CMAKE_SOURCE_DIR}/src/modules/game_writes.cpp               # Step 7: the write seam
+    ${CMAKE_SOURCE_DIR}/src/modules/client_sound.cpp              # Step 8c: the Client Sound sink (portable)
     ${CMAKE_SOURCE_DIR}/src/ui/hud.cpp                            # Step 7: the overlay renderer
     ${CMAKE_SOURCE_DIR}/src/ui/overlay.cpp)                        # Step 7: the overlay policy
 

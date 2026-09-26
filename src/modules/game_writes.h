@@ -48,6 +48,13 @@ public:
     [[nodiscard]] virtual game::Maybe<bool> sprint_key_pressed() noexcept = 0;
     virtual bool apply_sprint(bool pressed) noexcept = 0;
     virtual void restore_sprint() noexcept = 0;
+
+    // The same shape for the sneak key (roadmap step 8: Safe Walk). Sneaking is the game's own
+    // "do not walk off this block" behaviour, so holding its key is the whole feature - no
+    // movement override, and the vanilla edge protection does the work.
+    [[nodiscard]] virtual game::Maybe<bool> sneak_key_pressed() noexcept = 0;
+    virtual bool apply_sneak(bool pressed) noexcept = 0;
+    virtual void restore_sneak() noexcept = 0;
 };
 
 // Installs a backend and returns the previous one (config::set_storage's shape, deliberately).
@@ -70,11 +77,15 @@ public:
     [[nodiscard]] game::Maybe<bool> sprint_key_pressed() noexcept override;
     bool apply_sprint(bool pressed) noexcept override;
     void restore_sprint() noexcept override;
+    [[nodiscard]] game::Maybe<bool> sneak_key_pressed() noexcept override;
+    bool apply_sneak(bool pressed) noexcept override;
+    void restore_sneak() noexcept override;
 
     // Test controls. `seed` is what the live option currently holds: the next apply_* captures it
     // as the baseline, and set_available(false) models "the mapping did not resolve".
     void seed(float gamma_value, float fov_value) noexcept;
     void seed_sprint(bool pressed) noexcept;
+    void seed_sneak(bool pressed) noexcept;
     void set_available(bool available) noexcept { available_ = available; }
 
     [[nodiscard]] bool available() const noexcept { return available_; }
@@ -86,6 +97,10 @@ public:
     [[nodiscard]] bool sprint_pressed() const noexcept { return sprint_pressed_; }
     [[nodiscard]] bool baseline_sprint() const noexcept { return baseline_sprint_; }
     [[nodiscard]] std::size_t sprint_applies() const noexcept { return sprint_applies_; }
+    [[nodiscard]] bool sneak_active() const noexcept { return sneak_active_; }
+    [[nodiscard]] bool sneak_pressed() const noexcept { return sneak_pressed_; }
+    [[nodiscard]] bool baseline_sneak() const noexcept { return baseline_sneak_; }
+    [[nodiscard]] std::size_t sneak_applies() const noexcept { return sneak_applies_; }
     [[nodiscard]] float baseline_gamma() const noexcept { return baseline_gamma_; }
     [[nodiscard]] float baseline_fov() const noexcept { return baseline_fov_; }
     [[nodiscard]] std::size_t gamma_applies() const noexcept { return gamma_applies_; }
@@ -111,6 +126,12 @@ private:
     bool sprint_captured_ = false;
     bool sprint_active_ = false;
     std::size_t sprint_applies_ = 0;
+
+    bool baseline_sneak_ = false;
+    bool sneak_pressed_ = false;
+    bool sneak_captured_ = false;
+    bool sneak_active_ = false;
+    std::size_t sneak_applies_ = 0;
 };
 
 } // namespace woke::modules

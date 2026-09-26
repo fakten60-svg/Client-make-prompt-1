@@ -7,8 +7,13 @@
 #include "modules/mace/mace_stats.h"
 #include "modules/mace/smash_flash.h"
 #include "modules/mace/smash_potential.h"
+#include "modules/misc/friend_manager.h"
 #include "modules/module_manager.h"
+#include "modules/movement/safe_walk.h"
 #include "modules/movement/velocity_display.h"
+#include "modules/spear/loyalty_hud.h"
+#include "modules/spear/riptide_indicator.h"
+#include "modules/spear/trident_cooldown.h"
 #include "modules/visual/custom_crosshair.h"
 #include "modules/visual/hud_module.h"
 #include "modules/visual/trajectories.h"
@@ -33,6 +38,14 @@ constexpr const char* kCombatStatsName = "Combat Stats";
 constexpr const char* kSmashName = "Smash Potential";
 constexpr const char* kSmashFlashName = "Smash Flash";
 constexpr const char* kMaceStatsName = "Mace Stats";
+
+// Step 8c. Client Sound is deliberately absent: it has no HUD output, so it must not keep the frame
+// pipeline alive - its cues are event-driven and cost nothing while idle.
+constexpr const char* kFriendName = "Friend Manager";
+constexpr const char* kSafeWalkName = "Safe Walk";
+constexpr const char* kRiptideName = "Riptide Indicator";
+constexpr const char* kTridentName = "Trident Cooldown";
+constexpr const char* kLoyaltyName = "Loyalty HUD";
 
 // One enabled check, spelled once. `find` is a name lookup against the fixed registry, so a
 // missing name is a null pointer and the dynamic_cast below is a no-op in that case.
@@ -63,7 +76,12 @@ bool wanted() noexcept {
         || enabled_named<modules::combat::CombatStats>(registry, kCombatStatsName)
         || enabled_named<modules::mace::SmashPotential>(registry, kSmashName)
         || enabled_named<modules::mace::SmashFlash>(registry, kSmashFlashName)
-        || enabled_named<modules::mace::MaceStats>(registry, kMaceStatsName)) {
+        || enabled_named<modules::mace::MaceStats>(registry, kMaceStatsName)
+        || enabled_named<modules::misc::FriendManager>(registry, kFriendName)
+        || enabled_named<modules::movement::SafeWalk>(registry, kSafeWalkName)
+        || enabled_named<modules::spear::RiptideIndicator>(registry, kRiptideName)
+        || enabled_named<modules::spear::TridentCooldown>(registry, kTridentName)
+        || enabled_named<modules::spear::LoyaltyHud>(registry, kLoyaltyName)) {
         return true;
     }
     return false;
