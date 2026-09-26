@@ -65,7 +65,22 @@ void shutdown() noexcept;
 [[nodiscard]] bool set_gamma(float gamma) noexcept;
 [[nodiscard]] bool set_fov(float degrees) noexcept;
 
-// ── The sprint key (roadmap step 8) ──────────────────────────────────────────────
+// ── Combat and mace reads (roadmap step 8) ──────────────────────────────────────
+//
+// Reads only, in the same Maybe-guarded shape as everything above. A target is whatever the
+// game itself put under the crosshair - the client points at what the player points at, and
+// never decides on its own who to look at.
+[[nodiscard]] Maybe<TargetInfo> crosshair_target() noexcept;
+[[nodiscard]] Maybe<float> attack_cooldown_progress() noexcept;
+[[nodiscard]] Maybe<double> player_fall_distance() noexcept;
+[[nodiscard]] Maybe<float> player_attack_range() noexcept;
+
+// True when the game reports the mace as the item in the player's main hand, decided by the
+// item's own translation key rather than a guessed item comparison. An unresolved handle or an
+// empty hand is `false`; the mace counters then stay at zero instead of counting the wrong item.
+[[nodiscard]] Maybe<bool> holding_mace() noexcept;
+
+// ── The sprint key (roadmap step 8) ──────────────────────────────────────────────────
 //
 // The client's sprint key binding, read and written through the game's own KeyBinding, so vanilla
 // input handling (canSprint/shouldStopSprinting and the sprint packet the game itself sends) is

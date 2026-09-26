@@ -29,7 +29,24 @@ end of this document are the historical record written while steps 3–5 were la
 | 4 — ImGui + macOS chrome | landed |
 | 5 — module system | landed |
 | 6 — widget library | landed |
-| 7 — visual modules | **next gate** |
+| 7 — visual modules | landed |
+| 8a — bind persistence, key dispatch, action modules | landed |
+| 8b — Combat + Mace readouts (7 modules) | **in review** |
+| 8c — Friend Manager, Client Sound, Safe Walk, Spear set | **next gate** |
+
+**Step 7 — visual modules.** Fullbright, HUD (watermark + arraylist), Zoom, Trajectories and Custom
+Crosshair are registered in `lifecycle.cpp` and render through `ui/hud.cpp`; the portable write seam
+(`modules/game_writes`) and the JNI-backed gamma/FOV backend landed with them, and the in-world
+overlay policy moved into `ui/overlay.cpp` so the suppression gate and the frame scheduler read one
+predicate. The host suite renders the overlay headlessly and asserts the velocity chip's gating.
+
+**Step 8 — the remaining module catalogue.** Sub-round 8a landed the bind-as-a-setting contract
+(a rebind is a persisted value), both-edge key dispatch with hold/action modules, Panic, the config
+hotkeys, Auto Sprint (holding the game's own sprint key) and the Velocity Display chip. Sub-round 8b
+adds the Combat set (Target HUD, Attack Cooldown, Reach Display, Combat Stats) and the Mace set
+(Smash Potential, Smash Stats, Smash Flash) plus the pure smash-damage model, all fed by the read-only
+combat reads in `jni/game_instance` and drawn by `ui/hud`. Sub-round 8c completes the catalogue
+(Friend Manager, Client Sound, Safe Walk, Riptide Indicator, Trident CD, Loyalty HUD).
 
 **Step 6 — widget library.** `ui/components/{keybind_badge,module_card,sidebar,search_bar}`,
 `ui/notifications` (fixed 8-slot toast pool), and `pill_toggle`/`traffic_lights` reworked onto the

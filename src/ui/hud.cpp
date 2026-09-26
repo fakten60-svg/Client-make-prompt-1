@@ -6,6 +6,8 @@
 
 #include "core/version.h"
 #include "modules/category.h"
+#include "modules/mace/smash_damage.h"
+#include "modules/mace/smash_potential.h"
 #include "modules/module_manager.h"
 #include "ui/theme.h"
 #include "utils/string_buffer.h"
@@ -14,6 +16,7 @@ namespace woke::ui::hud {
 namespace {
 
 using modules::BaseModule;
+namespace mace = woke::modules::mace;
 
 constexpr float kMargin = 8.0f;
 constexpr float kRowHeight = 18.0f;
@@ -42,6 +45,37 @@ struct Row {
     float width = 0.0f;
     Rgba accent = util::from_hex(0xFFFFFF);
 };
+
+// The chip plate the left column is built from: card fill, accent bar, one line of text. Every
+// step-8 chip composes it so the column reads as one client rather than five widgets. The frame
+// is not consulted - a chip is always left-aligned at the margin - but it stays in the signature
+// so every chip's call site reads the same.
+Rect chip_plate(const Frame& /*frame*/, float y, float width) noexcept {
+    return Rect{kMargin, y, width + (kRowPadding * 2.0f), kChipHeight};
+}
+
+void draw_chip(ImDrawList* draw_list, const Rect& plate, const char* text, const Rgba& accent,
+    float alpha) noexcept {
+    draw::rounded_rect(draw_list, plate, util::scale_alpha(theme::color::kCard, alpha * 0.85f),
+        theme::metrics::kFrameRounding);
+    draw::rounded_rect(draw_list, Rect{plate.x, plate.y, kAccentBarWidth, plate.h},
+        util::scale_alpha(accent, alpha), theme::metrics::kFrameRounding);
+    draw::text_in(draw_list, plate.offset(kRowPadding, 0.0f), text,
+        util::scale_alpha(theme::color::kText, alpha), draw::Align::Left);
+}
+
+// The y position of the next left-column chip: directly under the watermark and the velocity
+// chip when those are showing, so the column stays a column.
+float left_column_y(const Frame& frame) noexcept {
+    float y = kMargin;
+    if (frame.watermark) {
+        y += kRowAdvance;
+    }
+    if (frame.velocity_chip && frame.world_live) {
+        y += kRowAdvance;
+    }
+    return y;
+}
 
 std::size_t collect_rows(std::array<Row, modules::ModuleManager::kMaxModules>& rows) noexcept {
     const modules::ModuleManager& registry = modules::manager();
@@ -118,6 +152,197 @@ void draw_velocity_chip(ImDrawList* draw_list, const Frame& frame, float alpha) 
         util::scale_alpha(theme::color::kAccent, alpha), theme::metrics::kFrameRounding);
     draw::text_in(draw_list, plate.offset(kRowPadding, 0.0f), text.c_str(),
         util::scale_alpha(theme::color::kText, alpha), draw::Align::Left);
+}
+
+// ── Step 8: Combat and Mace readouts ─────────────────────────────────────────────
+
+// The left-column chips share a running cursor: each one draws at `column_y` and advances it,
+// so enabling three readouts stacks a column instead of stacking three chips on one spot.
+
+void draw_target_card(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    const float scale = frame.target_scale > 0.25f ? frame.target_scale : 0.25f;
+
+    util::FixedString<96> text;
+    if (frame.target.name.empty()) {
+        text.format("%.1f m", frame.target.distance);
+    } else {
+        text.format("%s  -  %.1f m", frame.target.name.c_str(), frame.target.distance);
+    }
+
+    // The health bar is the card's second row when the target has one; a non-living target
+    // (its max health read as zero) draws a single name-distance row instead.
+    const bool has_health = frame.target.max_health > 0.0f;
+    const float line_height = draw::text_height() * scale;
+    const float bar_height = has_health ? 4.0f * scale : 0.0f;
+    const float width = (draw::text_width(text.c_str()) > (60.0f * scale)
+                                ? draw::text_width(text.c_str())
+                                : (60.0f * scale))
+        + (kRowPadding * 2.0f);
+    const float height = (kRowPadding * 2.0f) + line_height + bar_height
+        + (has_health ? (2.0f * scale) : 0.0f);
+
+    Rect plate{kMargin, kMargin, width, height};
+    if (frame.target_position == 0) {
+        // Under the crosshair, following the game's own nametag convention.
+        plate.x = frame.screen.center_x() - (width * 0.5f);
+        plate.y = frame.screen.center_y() + (24.0f * scale);
+    } else {
+        plate.y = column_y;
+        column_y += height + kRowGap;
+    }
+
+    draw::rounded_rect(draw_list, plate, util::scale_alpha(theme::color::kCard, alpha * 0.85f),
+        theme::metrics::kFrameRounding);
+    draw::rounded_rect(draw_list, Rect{plate.x, plate.y, kAccentBarWidth, plate.h},
+        util::scale_alpha(theme::color::kAccent, alpha), theme::metrics::kFrameRounding);
+    draw::text_clipped(draw_list, plate.inset(kRowPadding).slice_top(line_height), text.c_str(),
+        util::scale_alpha(theme::color::kText, alpha), draw::Align::Left);
+
+    if (has_health) {
+        const Rect bar_area =
+            Rect{plate.x + kRowPadding, plate.bottom() - bar_height - kRowPadding,
+                plate.w - (kRowPadding * 2.0f), bar_height};
+        draw::rounded_rect(draw_list, bar_area,
+            util::scale_alpha(theme::color::kSeparator, alpha), 2.0f);
+        const float fraction = frame.target.max_health > 0.0f
+            ? util::clamp01(frame.target.health / frame.target.max_health)
+            : 0.0f;
+        const float absorption_fraction = frame.target.max_health > 0.0f
+            ? util::clamp01(
+                (frame.target.health + frame.target.absorption) / frame.target.max_health)
+            : 0.0f;
+        draw::rounded_rect(draw_list,
+            Rect{bar_area.x, bar_area.y, bar_area.w * fraction, bar_area.h},
+            util::scale_alpha(theme::color::kTrafficRed, alpha), 2.0f);
+        if (absorption_fraction > fraction) {
+            draw::rounded_rect(draw_list,
+                Rect{bar_area.x + (bar_area.w * fraction), bar_area.y,
+                    bar_area.w * (absorption_fraction - fraction), bar_area.h},
+                util::scale_alpha(theme::color::kTrafficYellow, alpha), 2.0f);
+        }
+    }
+}
+
+void draw_cooldown_bar(ImDrawList* draw_list, const Frame& frame, float alpha) noexcept {
+    const float progress = util::clamp01(frame.cooldown_progress);
+    const Rgba color = util::scale_alpha(frame.cooldown_color, alpha);
+    const float center_x = frame.screen.center_x();
+    const float center_y = frame.screen.center_y();
+
+    if (frame.cooldown_style == 1) {
+        // The arc: twelve segments around the crosshair. A real arc path would cost a
+        // tessellation per frame; twelve short chords read identically at this radius.
+        constexpr int kSegments = 12;
+        constexpr float kRadius = 16.0f;
+        constexpr float kFullAngle = 6.2831853f; // 2pi
+        const int filled = static_cast<int>(progress * static_cast<float>(kSegments));
+        for (int index = 0; index < kSegments; ++index) {
+            const float angle0 =
+                (static_cast<float>(index) / static_cast<float>(kSegments)) * kFullAngle;
+            const float angle1 =
+                (static_cast<float>(index + 1) / static_cast<float>(kSegments)) * kFullAngle;
+            const Rgba segment_color = index < filled
+                ? color
+                : util::scale_alpha(theme::color::kSeparator, alpha);
+            draw::line(draw_list, center_x + (std::cos(angle0) * kRadius),
+                center_y + (std::sin(angle0) * kRadius),
+                center_x + (std::cos(angle1) * kRadius),
+                center_y + (std::sin(angle1) * kRadius), segment_color, 2.0f);
+        }
+        return;
+    }
+
+    // The bar: a fixed-width track under the crosshair with a filled leading edge.
+    constexpr float kBarWidth = 44.0f;
+    constexpr float kBarHeight = 3.0f;
+    const Rect track{center_x - (kBarWidth * 0.5f), center_y + 14.0f, kBarWidth, kBarHeight};
+    draw::rounded_rect(draw_list, track, util::scale_alpha(theme::color::kSeparator, alpha), 1.5f);
+    if (progress > 0.001f) {
+        draw::rounded_rect(
+            draw_list, Rect{track.x, track.y, track.w * progress, track.h}, color, 1.5f);
+    }
+}
+
+void draw_reach_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    util::FixedString<32> text;
+    text.format("reach %.2f", frame.reach_blocks);
+    const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+    draw_chip(draw_list, plate, text.c_str(), theme::color::kAccent, alpha);
+    column_y += kRowAdvance;
+}
+
+// The two session-counter chips. Drawn as one function because they share a format; the combat
+// counters win the slot when both are enabled, which the §8 ordering (Combat before Mace) also
+// implies. Counters survive a world change: they are the session's data, not the world's.
+void draw_counter_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    if (frame.combat_counters) {
+        util::FixedString<64> text;
+        text.format("S %u  H %u  W %u", frame.counter_swings, frame.counter_hits,
+            frame.counter_wasted);
+        const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+        draw_chip(draw_list, plate, text.c_str(), theme::color::kAccentAlt, alpha);
+        column_y += kRowAdvance;
+    }
+    if (frame.mace_counters) {
+        util::FixedString<64> text;
+        text.format("M S %u  H %u  SM %u", frame.mace_swing_count, frame.mace_hit_count,
+            frame.mace_smash_count);
+        const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+        draw_chip(draw_list, plate, text.c_str(), theme::color::kTrafficYellow, alpha);
+        column_y += kRowAdvance;
+    }
+}
+
+void draw_smash_chip(ImDrawList* draw_list, const Frame& frame, float alpha,
+    float& column_y) noexcept {
+    const mace::SmashDamage projected =
+        mace::project_smash(frame.fall_distance, frame.smash_enhanced);
+
+    util::FixedString<48> text;
+    text.format("smash %.1f%s", projected.total, projected.smash_ready ? "  READY" : "");
+
+    // Colour by damage band: normal, notable, lethal. The thresholds are the module's; the
+    // swatches are the theme's.
+    Rgba accent = theme::color::kTrafficYellow;
+    switch (mace::SmashPotential::band_for(projected.total)) {
+    case 2:
+        accent = theme::color::kTrafficRed;
+        break;
+    case 1:
+        accent = theme::color::kTrafficGreen;
+        break;
+    default:
+        accent = theme::color::kTrafficYellow;
+        break;
+    }
+
+    const Rect plate = chip_plate(frame, column_y, draw::text_width(text.c_str()));
+    draw_chip(draw_list, plate, text.c_str(), accent, alpha);
+    column_y += kRowAdvance;
+}
+
+// Four translucent edge quads, the shadow's inverse: a flash *is* an unshadow. Drawn on the
+// same frame, so it needs no second pass and costs eight vertices.
+void draw_smash_flash(ImDrawList* draw_list, const Frame& frame, float alpha) noexcept {
+    const float strength = util::clamp01(frame.flash_intensity);
+    if (strength <= 0.0f) {
+        return;
+    }
+    const Rgba color = util::scale_alpha(accent_color_for(0), alpha * strength * 0.35f);
+    constexpr float kEdge = 26.0f;
+    const Rect& screen = frame.screen;
+
+    draw_list->AddRectFilled(ImVec2(screen.left(), screen.top()),
+        ImVec2(screen.right(), screen.top() + kEdge), draw::to_im_u32(color));
+    draw_list->AddRectFilled(ImVec2(screen.left(), screen.bottom() - kEdge),
+        ImVec2(screen.right(), screen.bottom()), draw::to_im_u32(color));
+    draw_list->AddRectFilled(ImVec2(screen.left(), screen.top()),
+        ImVec2(screen.left() + kEdge, screen.bottom()), draw::to_im_u32(color));
+    draw_list->AddRectFilled(ImVec2(screen.right() - kEdge, screen.top()),
+        ImVec2(screen.right(), screen.bottom()), draw::to_im_u32(color));
 }
 
 void draw_arraylist(ImDrawList* draw_list, const Frame& frame, float alpha) noexcept {
@@ -222,9 +447,32 @@ void draw_trajectory(ImDrawList* draw_list, const Frame& frame, float alpha) noe
 
 } // namespace
 
+// Index-matched to the step-8 modules' colour enums (Attack Cooldown, Smash Flash). One table here
+// means a re-theme stays one file. Defined at namespace scope because it is part of the renderer's
+// public vocabulary (step8_frame.cpp hands the resolved colour to the Frame), not a private helper.
+Rgba accent_color_for(const std::size_t index) noexcept {
+    switch (index) {
+    case 1:
+        return theme::color::kText;
+    case 2:
+        return theme::color::kTrafficGreen;
+    case 3:
+        return theme::color::kTrafficRed;
+    case 4:
+        return theme::color::kAccentAlt;
+    default:
+        return theme::color::kAccent;
+    }
+}
+
 bool active(const Frame& frame) noexcept {
+    // The counter chips are session data, so they draw with no world live - everything else in
+    // the step-8 set gates on world_live like the trajectory does.
+    const bool combat_reads = frame.target_card || frame.cooldown_bar || frame.reach_chip
+        || frame.smash_chip || frame.smash_flash;
     return frame.watermark || frame.arraylist || frame.crosshair
-        || (frame.velocity_chip && frame.world_live) || (frame.trajectory && frame.world_live);
+        || (frame.velocity_chip && frame.world_live) || (frame.trajectory && frame.world_live)
+        || (combat_reads && frame.world_live) || frame.combat_counters || frame.mace_counters;
 }
 
 void render(ImDrawList* draw_list, const Frame& frame) noexcept {
@@ -242,11 +490,31 @@ void render(ImDrawList* draw_list, const Frame& frame) noexcept {
     if (frame.crosshair) {
         draw_crosshair(draw_list, frame, alpha);
     }
+    if (frame.cooldown_bar && frame.world_live) {
+        draw_cooldown_bar(draw_list, frame, alpha);
+    }
+    if (frame.smash_flash && frame.world_live) {
+        draw_smash_flash(draw_list, frame, alpha);
+    }
     if (frame.watermark) {
         draw_watermark(draw_list, frame, alpha);
     }
     if (frame.velocity_chip && frame.world_live) {
         draw_velocity_chip(draw_list, frame, alpha);
+    }
+    // The left-column readouts share one cursor so any combination stacks a column.
+    float column_y = left_column_y(frame);
+    if (frame.target_card && frame.world_live && frame.target.valid) {
+        draw_target_card(draw_list, frame, alpha, column_y);
+    }
+    if (frame.reach_chip && frame.world_live) {
+        draw_reach_chip(draw_list, frame, alpha, column_y);
+    }
+    if (frame.smash_chip && frame.world_live) {
+        draw_smash_chip(draw_list, frame, alpha, column_y);
+    }
+    if (frame.combat_counters || frame.mace_counters) {
+        draw_counter_chip(draw_list, frame, alpha, column_y);
     }
     if (frame.arraylist) {
         draw_arraylist(draw_list, frame, alpha);

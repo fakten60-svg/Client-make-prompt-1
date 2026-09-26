@@ -1,5 +1,12 @@
 #include "ui/overlay.h"
 
+#include "modules/combat/attack_cooldown.h"
+#include "modules/combat/combat_stats.h"
+#include "modules/combat/reach_display.h"
+#include "modules/combat/target_hud.h"
+#include "modules/mace/mace_stats.h"
+#include "modules/mace/smash_flash.h"
+#include "modules/mace/smash_potential.h"
 #include "modules/module_manager.h"
 #include "modules/movement/velocity_display.h"
 #include "modules/visual/custom_crosshair.h"
@@ -16,6 +23,25 @@ constexpr const char* kCrosshairName = "Custom Crosshair";
 constexpr const char* kTrajectoriesName = "Trajectories";
 constexpr const char* kVelocityName = "Velocity Display";
 
+// Step 8 (Combat / Mace). The counter modules are in this list on purpose: their chips are session
+// data that draw with no world loaded, so an enabled counter keeps the frame pipeline alive on its
+// own, exactly like the watermark.
+constexpr const char* kTargetHudName = "Target HUD";
+constexpr const char* kCooldownName = "Attack Cooldown";
+constexpr const char* kReachName = "Reach Display";
+constexpr const char* kCombatStatsName = "Combat Stats";
+constexpr const char* kSmashName = "Smash Potential";
+constexpr const char* kSmashFlashName = "Smash Flash";
+constexpr const char* kMaceStatsName = "Mace Stats";
+
+// One enabled check, spelled once. `find` is a name lookup against the fixed registry, so a
+// missing name is a null pointer and the dynamic_cast below is a no-op in that case.
+template <typename Module>
+[[nodiscard]] bool enabled_named(const modules::ModuleManager& registry, const char* name) noexcept {
+    const auto* module = dynamic_cast<const Module*>(registry.find(name));
+    return module != nullptr && module->enabled();
+}
+
 } // namespace
 
 bool wanted() noexcept {
@@ -28,19 +54,19 @@ bool wanted() noexcept {
         hud != nullptr && hud->draws()) {
         return true;
     }
-    if (const auto* crosshair =
-            dynamic_cast<const modules::visual::CustomCrosshair*>(registry.find(kCrosshairName));
-        crosshair != nullptr && crosshair->enabled()) {
+    if (enabled_named<modules::visual::CustomCrosshair>(registry, kCrosshairName)
+        || enabled_named<modules::movement::VelocityDisplay>(registry, kVelocityName)
+        || enabled_named<modules::visual::Trajectories>(registry, kTrajectoriesName)
+        || enabled_named<modules::combat::TargetHud>(registry, kTargetHudName)
+        || enabled_named<modules::combat::AttackCooldown>(registry, kCooldownName)
+        || enabled_named<modules::combat::ReachDisplay>(registry, kReachName)
+        || enabled_named<modules::combat::CombatStats>(registry, kCombatStatsName)
+        || enabled_named<modules::mace::SmashPotential>(registry, kSmashName)
+        || enabled_named<modules::mace::SmashFlash>(registry, kSmashFlashName)
+        || enabled_named<modules::mace::MaceStats>(registry, kMaceStatsName)) {
         return true;
     }
-    if (const auto* velocity =
-            dynamic_cast<const modules::movement::VelocityDisplay*>(registry.find(kVelocityName));
-        velocity != nullptr && velocity->enabled()) {
-        return true;
-    }
-    const auto* trajectories =
-        dynamic_cast<const modules::visual::Trajectories*>(registry.find(kTrajectoriesName));
-    return trajectories != nullptr && trajectories->enabled();
+    return false;
 }
 
 } // namespace woke::ui::overlay
