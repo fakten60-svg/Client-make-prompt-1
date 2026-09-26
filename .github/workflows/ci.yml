@@ -3,6 +3,10 @@ name: ci
 on:
   push:
     branches: [main, develop, "feature/**"]
+    # Without a tags filter, a push of tags triggers nothing when branches is
+    # also declared - learned when the v0.1.0 tag push produced no run and the
+    # release job could never fire. Both filters are evaluated (either matches).
+    tags: ["v*"]
   pull_request:
     branches: [main, develop]
 
