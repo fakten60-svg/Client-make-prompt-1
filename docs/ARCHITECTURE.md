@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation in progress (Step 0 scaffold through Step 6 widget library landed)
+**Status:** Blueprint v1.0 — implementation complete (steps 0–10 landed; `v0.1.0` is tagged on `main`).
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -16,9 +16,9 @@
 
 ## 0. Implementation status (live)
 
-This block is the current status board; the per-step evidence table and the design notes near the
-end of this document are the historical record written while steps 3–5 were landing. Where their
-`Next gate:` lines disagree with the table below, this table is the newer statement.
+This block is the current status board; the per-step QA table (§12.2) and the roadmap and workflow
+notes (§9–§10) near the end of this document are the historical record written while the early
+steps were landing. Where they disagree with the table below, this table is the newer statement.
 
 | Step | State |
 |---|---|
@@ -34,7 +34,8 @@ end of this document are the historical record written while steps 3–5 were la
 | 8b — Combat + Mace readouts (7 modules) | landed |
 | 8c — Friend Manager, Client Sound, Safe Walk, Spear set (6 modules) | landed |
 | 8d — Wind Charge CD (the catalogue's last entry) | landed |
-| 9 — Perf + hardening (soak reporter, teardown audit, gui split) | **in review** |
+| 9 — Perf + hardening (soak reporter, teardown audit, gui split) | landed |
+| 10 — Polish + release (theme pass, README, v0.1.0) | **next gate** |
 
 **Step 7 — visual modules.** Fullbright, HUD (watermark + arraylist), Zoom, Trajectories and Custom
 Crosshair are registered in `lifecycle.cpp` and render through `ui/hud.cpp`; the portable write seam
@@ -867,7 +868,10 @@ step. Each gate must pass before the next step starts.
 
 ### 10.2 Branch & PR flow
 
-- `feature/<roadmap-step>` → `develop` (squash). `develop` → `main` (release PR, tag).
+- One branch per roadmap step — `feature/step-<N>-<slug>` (sub-steps: `feature/step-8a-...`) —
+  merged to `main` through a PR (merge commits, so the step's commits survive in `main`'s
+  history; the branch is deleted after merge). There is no `develop` branch: `main` is the only
+  integration line, and a release is an annotated tag on it.
 - PR description: files, blueprint section refs, gate evidence (CI link + QA notes).
 - CI must be green (build + `/WX` warnings-as-errors + host tests) before merge.
 
@@ -945,6 +949,57 @@ Every PR checks **all** of:
 | Step 9 | 10-min soak: overlay avg <0.5 ms; inject/eject ×20 stable; no local-ref leaks (log line) |
 | Step 10 | Tag `v0.1.0`; README + release notes; CI artifact attached |
 
+### 12.3 Local Windows-TU syntax check (MinGW cross-compile, no MSVC needed)
+
+The sandbox has no MSVC, and the `gui_*`/`hooks`/`jni` translation units are Windows-only — the
+Linux runner compiles none of them. Step 9 established a local check that catches most
+Windows-side compile errors before CI does (the two it cannot catch are recorded in §12.4):
+
+```sh
+# once: mingw, MinHook's header (syntax-check only, nothing linked), and a JDK 21 unpacked
+# under /tmp/tools (jni_md.h lives in include/linux)
+apt-get install -y g++-mingw-w64-x86-64-win32
+git clone --depth 1 https://github.com/TsudaKageyu/minhook.git /tmp/minhook
+
+MINGW=x86_64-w64-mingw32-g++-win32
+WARN="-std=c++20 -Wall -Wextra -Wpedantic -fsyntax-only -Wno-unknown-pragmas \
+  -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
+  -DWOKE_HAVE_JNI=1 -Isrc -Ibuild/tmp/imgui -Ibuild/tmp/imgui/backends \
+  -Ibuild/tmp/nlohmann/include -I/tmp/minhook/minhook/include \
+  -I/tmp/tools/jdk-21.0.12.1+1/include -I/tmp/tools/jdk-21.0.12.1+1/include/linux"
+for f in $(git ls-files 'src/*.cpp'); do
+  $MINGW $WARN "$f" || echo "FAIL: $f"
+done
+```
+
+Notes learned the hard way:
+
+- `-D_WIN32_WINNT=0x0601` is required: mingw's default leaves `WM_MOUSEHWHEEL` undefined
+  (it sits behind `_WIN32_WINNT >= 0x0600`), which MSVC's real build never sees.
+- `-I$JDK/linux` (not `/win32`) is where this JDK ships `jni_md.h`; a syntax pass only
+  needs the types to resolve.
+- MinHook contributes two headers to the include path; nothing from it is linked.
+- The sandbox's mingw is GCC 10, whose libstdc++ does not implement C++20 heterogeneous
+  lookup for unordered containers (P1690, GCC 11+): the portable `jni/mappings.cpp`, which
+  the host suite compiles cleanly with GCC 11 and MSVC compiles cleanly in CI, reports false
+  `no matching function for unordered_map::find(std::string_view)` errors there. The pass is
+  read with that in mind — it gates the Windows-only TUs, and the portable ones are already
+  compiled by the host suite.
+- `-Wno-unknown-pragmas` silences the `#pragma warning` blocks MSVC-only sources carry.
+- This is a *syntax and warning* gate, not a link or semantic gate — see §12.4 for what
+  slipped past it and how the rules changed.
+
+### 12.4 What the local gates cannot catch (recorded from step 9's CI run)
+
+Two step-9 bugs passed everything local and were caught only by the Windows CI job:
+
+1. **MSVC C2124** — `0.0f / 0.0f` is folded and rejected at compile time by MSVC where GCC
+   emits a runtime NaN. Rule: a NaN test value must come from a runtime call
+   (`std::sqrt(-1.0f)`), never a literal division.
+2. **Unresolved externals** — `core/soak.cpp` was written and called but never added to
+   `WOKE_CORE_SOURCES`; a `-fsyntax-only` pass cannot see a missing object file. Rule:
+   every new `.cpp` joins its CMake source list in the same commit that creates it.
+
 ---
 
 ## 13. Risk Register & Error-Handling Matrix
@@ -979,7 +1034,9 @@ Every PR checks **all** of:
 
 ---
 
-**End of blueprint.** Implementation is underway:
+**End of blueprint.** The evidence table below was written while steps 0–5 were landing and
+is kept as the historical record; steps 6–10 are recorded in §0, whose status board is the
+live statement (the step-9 note sits directly under it).
 
 | Step | State | Evidence |
 |---|---|---|

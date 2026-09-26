@@ -138,3 +138,38 @@ jobs:
             bin/Release/woke.dll
             bin/Release/woke_injector.exe
           if-no-files-found: error
+
+  # A tag on main is a release: the same verified artifact is attached to a GitHub
+  # Release. The push run that carries the tag re-runs the build (so the attached DLL
+  # is exactly what CI verified, not a re-download), then publishes the Release. The
+  # workflow_dispatch trigger keeps the publish path exercised outside of tags too.
+  release:
+    name: release (windows x64 dll)
+    needs: [host-tests, build-windows]
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the verified windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: woke-windows-x64
+          path: dist
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          test -f dist/woke.dll
+          test -f dist/woke_injector.exe
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/woke.dll#woke.dll (x64 Windows, release build)" \
+            "dist/woke_injector.exe#woke_injector.exe (local testing loader)" \
+            --verify-tag \
+            --title "woke.wtf $GITHUB_REF_NAME" \
+            --notes "Release build of woke.dll for Minecraft 1.21.11 Fabric (x64 Windows)."$'\n\n'"For private server testing and local singleplayer development only - see README.md for the scope guardrails, build instructions and usage."
