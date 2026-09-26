@@ -31,8 +31,9 @@ end of this document are the historical record written while steps 3–5 were la
 | 6 — widget library | landed |
 | 7 — visual modules | landed |
 | 8a — bind persistence, key dispatch, action modules | landed |
-| 8b — Combat + Mace readouts (7 modules) | **in review** |
-| 8c — Friend Manager, Client Sound, Safe Walk, Spear set | **next gate** |
+| 8b — Combat + Mace readouts (7 modules) | landed |
+| 8c — Friend Manager, Client Sound, Safe Walk, Spear set (6 modules) | **in review** |
+| 8d — Wind Charge CD (blocked on an ItemCooldownManager mapping) | **next gate** |
 
 **Step 7 — visual modules.** Fullbright, HUD (watermark + arraylist), Zoom, Trajectories and Custom
 Crosshair are registered in `lifecycle.cpp` and render through `ui/hud.cpp`; the portable write seam
@@ -45,8 +46,17 @@ predicate. The host suite renders the overlay headlessly and asserts the velocit
 hotkeys, Auto Sprint (holding the game's own sprint key) and the Velocity Display chip. Sub-round 8b
 adds the Combat set (Target HUD, Attack Cooldown, Reach Display, Combat Stats) and the Mace set
 (Smash Potential, Smash Stats, Smash Flash) plus the pure smash-damage model, all fed by the read-only
-combat reads in `jni/game_instance` and drawn by `ui/hud`. Sub-round 8c completes the catalogue
-(Friend Manager, Client Sound, Safe Walk, Riptide Indicator, Trident CD, Loyalty HUD).
+combat reads in `jni/game_instance` and drawn by `ui/hud`. Sub-round 8c adds the Misc pair (Friend
+Manager, a local session-scoped list; Client Sound, per-cue toggles over a portable play sink with a
+Win32 `PlaySound` backend), Movement's Safe Walk (which holds the game's *own* sneak key through the
+same write seam Auto Sprint uses, so vanilla edge protection does the work) and the Spear set
+(Riptide Indicator from the game's `isUsingRiptide` flag, Trident Cooldown from the trident's own
+swing charge while a trident is held, and Loyalty HUD as a client-observed throw/return timer).
+
+**The one catalogue entry still open** is Mace's Wind Charge CD. Minecraft keeps the thrown-item
+cooldown on an `ItemCooldownManager` the curated mapping asset does not currently expose, and this
+client does not guess at a duration it cannot read, so the module is deferred until the asset is
+regenerated with that class rather than shipped as a number the game never agreed to.
 
 **Step 6 — widget library.** `ui/components/{keybind_badge,module_card,sidebar,search_bar}`,
 `ui/notifications` (fixed 8-slot toast pool), and `pill_toggle`/`traffic_lights` reworked onto the

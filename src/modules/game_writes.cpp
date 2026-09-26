@@ -102,6 +102,36 @@ void RecordingGameWrites::restore_sprint() noexcept {
     ++restores_;
 }
 
+game::Maybe<bool> RecordingGameWrites::sneak_key_pressed() noexcept {
+    if (!available_) {
+        return game::Maybe<bool>::missing();
+    }
+    return game::Maybe<bool>::of(sneak_pressed_);
+}
+
+bool RecordingGameWrites::apply_sneak(bool pressed) noexcept {
+    if (!available_) {
+        return false;
+    }
+    if (!sneak_captured_) {
+        baseline_sneak_ = sneak_pressed_;
+        sneak_captured_ = true;
+    }
+    sneak_active_ = true;
+    sneak_pressed_ = pressed;
+    ++sneak_applies_;
+    return true;
+}
+
+void RecordingGameWrites::restore_sneak() noexcept {
+    if (!sneak_active_) {
+        return;
+    }
+    sneak_pressed_ = baseline_sneak_;
+    sneak_active_ = false;
+    ++restores_;
+}
+
 void RecordingGameWrites::seed(float gamma_value, float fov_value) noexcept {
     gamma_value_ = gamma_value;
     fov_value_ = fov_value;
@@ -111,12 +141,20 @@ void RecordingGameWrites::seed(float gamma_value, float fov_value) noexcept {
     fov_active_ = false;
     sprint_captured_ = false;
     sprint_active_ = false;
+    sneak_captured_ = false;
+    sneak_active_ = false;
 }
 
 void RecordingGameWrites::seed_sprint(bool pressed) noexcept {
     sprint_pressed_ = pressed;
     sprint_captured_ = false;
     sprint_active_ = false;
+}
+
+void RecordingGameWrites::seed_sneak(bool pressed) noexcept {
+    sneak_pressed_ = pressed;
+    sneak_captured_ = false;
+    sneak_active_ = false;
 }
 
 GameWrites* set_game_writes(GameWrites* writes) noexcept {

@@ -115,6 +115,40 @@ struct Frame {
     bool smash_flash = false;
     float flash_intensity = 0.5f;
 
+    // ── Step 8c: Misc / Movement / Spear readouts ─────────────────────────────
+    //
+    // Same shape as the step-8b chips: the module decides *that* and *how*, the frame builder
+    // supplies the live values, and the renderer is a pure function of the frame. The step-8c chips
+    // share the step-8b left-hand column, so any combination stacks instead of overlapping.
+
+    // Friend Manager (Misc): a local list's size. Session data, like the counters.
+    bool friend_chip = false;
+    std::uint32_t friend_count = 0;
+
+    // Safe Walk (Movement): engaged while the module holds the game's sneak key.
+    bool safe_walk_chip = false;
+    bool safe_walk_engaged = false;
+
+    // Riptide Indicator (Spear): the game's own riptide flag and whether a trident is held.
+    bool riptide_chip = false;
+    bool riptide_engaged = false;
+    bool riptide_trident = false;
+
+    // Trident Cooldown (Spear): the trident's swing charge, shown while a trident is held.
+    bool trident_chip = false;
+    float trident_progress = 0.0f;
+    Rgba trident_color = util::from_hex(0x3FD2E0);
+
+    // Loyalty HUD (Spear): the client-observed throw-and-return trip.
+    bool loyalty_chip = false;
+    bool loyalty_tracking = false;
+    double loyalty_seconds = 0.0;
+    double loyalty_last_trip = 0.0;
+
+    // The frame's own delta, so a module that observes across frames (Loyalty HUD) advances on the
+    // same clock as everything else instead of assuming a rate (§7.4: one clock, one tick).
+    float delta_seconds = 0.0f;
+
     bool crosshair = false;
     CrosshairStyle crosshair_style{};
 
