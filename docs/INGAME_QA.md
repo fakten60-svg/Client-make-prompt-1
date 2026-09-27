@@ -1,6 +1,6 @@
-# In-Game QA Protocol — woke.wtf v0.1.0
+# In-Game QA Protocol — woke.wtf v0.1.1
 
-**Status:** the automated gates (MSVC x64 Release build, 1401 portable host checks, ASan+UBSan,
+**Status:** the automated gates (MSVC x64 Release build, 1407 portable host checks, ASan+UBSan,
 GCC `-fanalyzer`, clang-tidy, artifact markers) all pass in CI. What none of them can prove is
 that `woke.dll` functions against a live Minecraft 1.21.11 Fabric JVM with a real OpenGL
 context. This file is the protocol for the human who can. Work top to bottom; record PASS/FAIL
@@ -23,7 +23,7 @@ was on screen, and note which module was enabled. Attach all three to the issue.
 
 ## 2. Download the release artifacts
 
-1. Open the `v0.1.0` GitHub Release page for this repository.
+1. Open the `v0.1.1` GitHub Release page for this repository.
 2. Download **`woke.dll`** and **`woke_injector.exe`**.
 3. Optional but recommended: download `mappings.json` from the repository root (same commit as
    the release tag) — see §3.
@@ -68,7 +68,7 @@ Mark each line PASS/FAIL with evidence (log excerpt, screenshot, or "n/a").
 ### 6.1 Boot
 
 - [ ] `logs/latest.log` exists in the **game directory** (not the injector's folder) and starts
-      with a boot header (`woke.wtf 0.1.0 | Minecraft 1.21.11 Fabric | ...`).
+      with a boot header (`woke.wtf 0.1.1 | Minecraft 1.21.11 Fabric | ...`).
 - [ ] The boot log contains one `boot: <step> ready (...)` line per successful step, and
       **either** all twelve steps ready **or** an explicit `degraded mode` warning for the
       skipped ones. A missing/failed `mappings` or `jvm-bridge` step is expected only if you
