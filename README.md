@@ -88,3 +88,6 @@ python3 tools/generate_mappings.py --jar yarn-1.21.11+build.6-v2.jar \
 
 `v0.1.0` is tagged on `main`. CI attaches the Release DLL (`woke.dll`) and `woke_injector.exe`
 to the GitHub release; every build also keeps them available as the `woke-windows-x64` artifact.
+
+The QA & hardening pass (`docs/QA_REPORT_v0.1.0.md`) ships as `v0.1.1`; still-pending items are
+`docs/KNOWN_ISSUES.md`. In-game verification is a human step — `docs/INGAME_QA.md`.

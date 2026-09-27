@@ -3,7 +3,7 @@
 **Client:** woke.wtf — Native C++ Injection Utility Client
 **Target:** Minecraft **1.21.11**, Fabric Loader, `javaw.exe` (x64 Windows)
 **Artifact:** `woke.dll` — statically links Dear ImGui + MinHook + nlohmann/json
-**Status:** Blueprint v1.0 — implementation complete (steps 0–10 landed; `v0.1.0` is tagged on `main`).
+**Status:** Blueprint v1.0 — implementation complete (steps 0–10 landed). `v0.1.0` is tagged on `main`; the QA & hardening pass ships as `v0.1.1` (`docs/QA_REPORT_v0.1.0.md`).
 **Scope:** Private server utility testing, QoL automation, local singleplayer development. Zero public multiplayer servers. Strictly EULA-compliant educational/local use.
 
 > **Interaction policy note (client-side only, by design):** every module operates through standard
@@ -36,6 +36,7 @@ steps were landing. Where they disagree with the table below, this table is the 
 | 8d — Wind Charge CD (the catalogue's last entry) | landed |
 | 9 — Perf + hardening (soak reporter, teardown audit, gui split) | landed |
 | 10 — Polish + release (README, doc reconcile, release artifact job) | landed |
+| QA — audit, test coverage, sanitizers, static analysis (v0.1.1) | landed |
 
 **Step 7 — visual modules.** Fullbright, HUD (watermark + arraylist), Zoom, Trajectories and Custom
 Crosshair are registered in `lifecycle.cpp` and render through `ui/hud.cpp`; the portable write seam
@@ -79,6 +80,18 @@ inject/eject-×20 transcript is grep-able for findings. The §11 network-safety 
 enforcement step (grep gate over `src/modules/`) plus a host-test mirror, and the EMA seam both
 perf meters smooth through is extracted and unit-tested (seed rule, fold rate, NaN/negative
 refusal). Host tests live in `tests/test_perf.cpp`.
+
+**QA & hardening pass (v0.1.1).** A code-level audit of v0.1.0 (ten areas, all PASS) plus a
+test-coverage, sanitizer and static-analysis sweep; the full result is
+`docs/QA_REPORT_v0.1.0.md` and the deferred findings are `docs/KNOWN_ISSUES.md`. Four findings
+were fixed: the deferred-save mailbox could tear a name (F1, HIGH — now a bounded spinlock),
+`FileStorage::write` wrote in place and could truncate on a crash (F2, MEDIUM — now
+write-temp-then-rename), a mismatched `mappings.json` was accepted instead of refused (F3,
+MEDIUM — `version::kRequiredGameVersion`), and the JNI attach/frame counters were racy plain
+integers (F4, LOW — now atomics). The portable suite grew from 1299 to 1407 checks
+(`tests/test_qa_hardening.cpp`), and CI gained ASan+UBSan, `-fanalyzer`, clang-tidy, and an
+MSVC `/analyze` evidence pass. **In-game verification is BLOCKED-BY-ENVIRONMENT** and is the
+human step in `docs/INGAME_QA.md`; no in-game claim is made anywhere.
 
 **Step 6 — widget library.** `ui/components/{keybind_badge,module_card,sidebar,search_bar}`,
 `ui/notifications` (fixed 8-slot toast pool), and `pill_toggle`/`traffic_lights` reworked onto the

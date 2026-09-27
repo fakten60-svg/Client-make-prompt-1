@@ -20,6 +20,7 @@ add_executable(woke_tests
     test_combat_mace.cpp                                      # Step 8b: the Combat/Mace readouts
     test_spear_misc.cpp                                       # Step 8c: the Misc/Movement/Spear readouts
     test_perf.cpp                                             # Step 9: budgets, EMA, §11 gate
+    test_qa_hardening.cpp                                     # QA pass: coverage gaps + F1/F3 regressions
     ${CMAKE_SOURCE_DIR}/src/utils/time_format.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/render_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/jni/mappings.cpp

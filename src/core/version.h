@@ -4,7 +4,7 @@
 // banner and crash-triage line all read from here, so a version bump can never leave
 // one surface reporting a stale value.
 #ifndef WOKE_VERSION_STRING
-#define WOKE_VERSION_STRING "0.1.0-dev"
+#define WOKE_VERSION_STRING "0.1.1-dev"
 #endif
 
 namespace woke::version {
@@ -13,6 +13,10 @@ inline constexpr const char* kClientName = "woke.wtf";
 inline constexpr const char* kVersion = WOKE_VERSION_STRING;
 inline constexpr const char* kTargetGame = "Minecraft 1.21.11 Fabric";
 inline constexpr const char* kTargetArch = "x64 Windows (javaw.exe)";
+// The Minecraft version the mapping asset must carry to be trusted at boot (QA F3):
+// a mappings.json generated for another game version refuses to load instead of
+// resolving against identifiers that no longer mean what the client expects.
+inline constexpr const char* kRequiredGameVersion = "1.21.11";
 inline constexpr const char* kBuildDate = __DATE__;
 inline constexpr const char* kBuildTime = __TIME__;
 

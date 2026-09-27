@@ -1,5 +1,7 @@
 #include "jni/mappings.h"
 
+#include "core/version.h"
+
 #include <exception>
 #include <fstream>
 #include <iterator>
@@ -224,6 +226,18 @@ bool Mappings::parse(std::string_view json_text) {
 
         version_ = document.value("version", std::string{});
         source_ = document.value("source", std::string{});
+
+        // QA F3: the asset must be generated for the game version the client targets. An asset
+        // from another release parses fine and still resolves identifiers that no longer mean
+        // what the client expects, so a mismatch is a refusal, not a warning - and the report
+        // names both versions. An asset *without* a version field stays accepted: the schema
+        // variants the parser supports (§5.4) predate the field.
+        if (!version_.empty() && version_ != woke::version::kRequiredGameVersion) {
+            sink.add("mappings: asset targets Minecraft " + version_ + " but this build needs "
+                + woke::version::kRequiredGameVersion
+                + " - regenerate mappings.json for the new game version");
+            return false;
+        }
 
         const Json* container = nullptr;
         const auto classes = document.find("classes");

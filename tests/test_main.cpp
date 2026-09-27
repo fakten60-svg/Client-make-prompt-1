@@ -14,6 +14,7 @@ void test_combat_mace();
 void test_spear_misc();
 void test_perf_policy();
 void test_network_safety_invariant();
+void test_qa_hardening();
 
 int main() {
     std::printf("woke.wtf host-side logic tests\n");
@@ -33,6 +34,7 @@ int main() {
     test_spear_misc();
     test_perf_policy();
     test_network_safety_invariant();
+    test_qa_hardening();
 
     return woke_test::summarize();
 }

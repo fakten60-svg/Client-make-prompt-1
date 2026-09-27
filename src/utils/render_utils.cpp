@@ -1,5 +1,7 @@
 #include "utils/render_utils.h"
 
+#include <cmath>
+
 #include <cfloat>
 #include <string>
 #include <string_view>
@@ -22,7 +24,7 @@ ImVec2 to_vec(float x, float y) noexcept {
 ImU32 to_im_u32(const Rgba& color) noexcept {
     const auto channel = [](float value) noexcept {
         const float clamped = util::clamp01(value);
-        return static_cast<unsigned int>((clamped * 255.0f) + 0.5f);
+        return static_cast<unsigned int>(std::lround(clamped * 255.0f));
     };
     return IM_COL32(channel(color.r), channel(color.g), channel(color.b), channel(color.a));
 }

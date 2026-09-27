@@ -24,6 +24,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CXX_BIN="${CXX:-g++-11}"
+# Extra compiler flags (e.g. WOKE_EXTRA_CXXFLAGS="-fsanitize=address,undefined" for the
+# sanitizer pass) appended to every compile and the link.
+EXTRA_CXXFLAGS="${WOKE_EXTRA_CXXFLAGS:-}"
 IMGUI_DIR="${WOKE_IMGUI_DIR:-/tmp/woke-deps/imgui}"
 JSON_DIR="${WOKE_JSON_DIR:-/tmp/woke-deps/nlohmann/include}"
 OUT="${1:-build/objs-host}"
@@ -55,6 +58,7 @@ TEST_SOURCES=(
     tests/test_combat_mace.cpp
     tests/test_spear_misc.cpp
     tests/test_perf.cpp
+    tests/test_qa_hardening.cpp
 )
 # The first-party TUs the test target links (portable code only).
 CORE_SOURCES=(
@@ -98,11 +102,11 @@ for src in "${TEST_SOURCES[@]}" "${CORE_SOURCES[@]}" "${IMGUI_SOURCES[@]}"; do
         continue
     fi
     echo "CXX $src"
-    "$CXX_BIN" $WARN "${FLAGS[@]}" -c "$src" -o "$obj"
+    "$CXX_BIN" $WARN $EXTRA_CXXFLAGS "${FLAGS[@]}" -c "$src" -o "$obj"
 done
 
 echo "LINK $OUT/woke_tests"
-"$CXX_BIN" -o "$OUT/woke_tests" "$OUT"/*.o
+"$CXX_BIN" $EXTRA_CXXFLAGS -o "$OUT/woke_tests" "$OUT"/*.o
 
 echo "RUN $OUT/woke_tests"
 "$OUT/woke_tests"

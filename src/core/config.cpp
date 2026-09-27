@@ -12,6 +12,8 @@
 #include <memory>
 #include <string>
 
+#include <exception>
+
 #include <nlohmann/json.hpp>
 
 #include "modules/module_manager.h"
@@ -66,25 +68,43 @@ public:
             (void)::mkdir(std::string(path.substr(0, slash)).c_str(), 0755);
 #endif
         }
+        // QA F2: the write lands in a sibling temp file first and is renamed over the target,
+        // so a crash mid-write leaves the previous config intact instead of a truncated file.
+        // The rename is best-effort because std::rename cannot replace an existing file on all
+        // Windows runtimes; the target is removed first, which keeps the window where no config
+        // exists down to one call instead of exposing a half-written one for the whole write.
+        const std::string target_path(path);
+        const std::string temp_path = target_path + ".tmp";
         std::FILE* handle = nullptr;
 #if defined(_WIN32)
-        if (::fopen_s(&handle, std::string(path).c_str(), "wb") != 0) {
+        if (::fopen_s(&handle, temp_path.c_str(), "wb") != 0) {
             return false;
         }
 #else
-        handle = std::fopen(std::string(path).c_str(), "wb");
+        handle = std::fopen(temp_path.c_str(), "wb");
         if (handle == nullptr) {
             return false;
         }
 #endif
         const std::size_t written = std::fwrite(contents.data(), 1, contents.size(), handle);
-        const bool ok = (written == contents.size()) && (std::fclose(handle) == 0);
-        return ok;
+        if (written != contents.size() || std::fclose(handle) != 0) {
+            (void)std::remove(temp_path.c_str());
+            return false;
+        }
+        // std::remove/std::rename take C strings, and a string_view is not guaranteed to be
+        // NUL-terminated, so both paths go through the owning std::string.
+        (void)std::remove(target_path.c_str());
+        if (std::rename(temp_path.c_str(), target_path.c_str()) != 0) {
+            (void)std::remove(temp_path.c_str());
+            return false;
+        }
+        return true;
     }
 
 private:
     // One config with 24 modules x 8 settings is a few KB; anything two orders larger is corrupt.
-    static constexpr std::size_t kMaxConfigBytes = 256u * 1024u;
+    static constexpr std::size_t kMaxConfigBytes =
+        static_cast<std::size_t>(256u) * static_cast<std::size_t>(1024u);
 };
 
 Storage* g_storage = nullptr; // nullptr = default file store
@@ -118,40 +138,80 @@ void park_name(char (&mailbox)[kSaveNameCapacity], const char* name) noexcept {
     mailbox[kSaveNameCapacity - 1] = '\0';
 }
 
+// Serialises "consume the pending flag" with "copy the name out of the mailbox" (QA F1). The
+// consumer must observe the name that belongs to the flag it took: reading the shared mailbox
+// after exchange() let a request posted between the two steps tear the name and write one
+// config's contents into another slot's file.
+//
+// A spinlock rather than std::mutex: the critical section is one bounded copy (nanoseconds),
+// the file stays free of <mutex> (some libstdc++ packagings - the mingw-w64 win32-threads
+// build - ship none of it), and there is no allocation on either path.
+std::atomic_flag g_save_name_lock = ATOMIC_FLAG_INIT;
+std::atomic_flag g_load_name_lock = ATOMIC_FLAG_INIT;
+
+// Copies a name out of its mailbox under the mailbox's spinlock.
+void take_name(std::atomic_flag& guard, const char (&mailbox)[kSaveNameCapacity],
+    char* out) noexcept {
+    while (guard.test_and_set(std::memory_order_acquire)) {
+        // spin: the holder is copying a bounded name and leaves immediately
+    }
+    for (std::size_t index = 0; index < kSaveNameCapacity; ++index) {
+        out[index] = mailbox[index];
+        if (mailbox[index] == '\0') {
+            break;
+        }
+    }
+    out[kSaveNameCapacity - 1] = '\0';
+    guard.clear(std::memory_order_release);
+}
+
 Storage& store() noexcept {
     static FileStorage default_store;
     return g_storage != nullptr ? *g_storage : default_store;
 }
 
 void collect_modules(json& out) noexcept {
-    const modules::ModuleManager& registry = modules::manager();
-    for (std::size_t index = 0; index < registry.count(); ++index) {
-        const modules::BaseModule* module = registry.at(index);
-        json& module_node = out[module->name()];
-        for (std::size_t entry = 0; entry < module->setting_count(); ++entry) {
-            settings::Setting* setting = const_cast<settings::Setting*>(module->settings()[entry]);
-            json value;
-            setting->to_json(value);
-            if (!value.is_null()) {
-                module_node[setting->name()] = std::move(value);
+    // json::operator[] inserts and the assignment can reallocate, both of which throw. The
+    // noexcept is the contract the boot path relies on, so the throwing part is fenced here
+    // rather than removed from the signature (QA: bugprone-exception-escape).
+    try {
+        const modules::ModuleManager& registry = modules::manager();
+        for (std::size_t index = 0; index < registry.count(); ++index) {
+            const modules::BaseModule* module = registry.at(index);
+            json& module_node = out[module->name()];
+            for (std::size_t entry = 0; entry < module->setting_count(); ++entry) {
+                settings::Setting* setting =
+                    const_cast<settings::Setting*>(module->settings()[entry]);
+                json value;
+                setting->to_json(value);
+                if (!value.is_null()) {
+                    module_node[setting->name()] = std::move(value);
+                }
             }
+            // The enabled state is part of the session the user expects to come back (§4.4:
+            // enable / disable is the only mutation path, and it is what a config snapshot is
+            // *of*).
+            module_node["enabled"] = module->enabled();
         }
-        // The enabled state is part of the session the user expects to come back (§4.4: enable /
-        // disable is the only mutation path, and it is what a config snapshot is *of*).
-        module_node["enabled"] = module->enabled();
+    } catch (...) {
+        // A partial document is worse than an empty one: drop it and let save() refuse.
+        out = json::object();
     }
 }
 
 } // namespace
+
+// The throwing body of deserialize(), fenced by the noexcept wrapper above.
+LoadReport deserialize_guarded(std::string_view json_text, LoadReport& report);
 
 void set_storage(Storage* storage) noexcept {
     g_storage = storage;
 }
 
 std::string serialize() noexcept {
-    json document = json::object();
-    collect_modules(document);
     try {
+        json document = json::object();
+        collect_modules(document);
         return document.dump(1);
     } catch (...) {
         return {};
@@ -160,6 +220,15 @@ std::string serialize() noexcept {
 
 LoadReport deserialize(std::string_view json_text) noexcept {
     LoadReport report;
+    try {
+        return deserialize_guarded(json_text, report);
+    } catch (...) {
+        // The guard already ran; the report says how far the load got before the exception.
+        return report;
+    }
+}
+
+LoadReport deserialize_guarded(std::string_view json_text, LoadReport& report) {
     // Loaded state counts as a mutation: the GUI's badges and the enabled fan-out must reflect it.
     struct BucketRefresh {
         modules::ModuleManager& registry;
@@ -242,7 +311,10 @@ void request_save(const char* name) noexcept {
     if (name == nullptr) {
         return;
     }
+    while (g_save_name_lock.test_and_set(std::memory_order_acquire)) {
+    }
     park_name(g_save_name, name);
+    g_save_name_lock.clear(std::memory_order_release);
     g_save_pending.store(true, std::memory_order_release);
 }
 
@@ -251,18 +323,28 @@ bool service_saves() noexcept {
     if (!pending) {
         return false;
     }
-    // Deliberately no logger call: this file stays portable (no windows.h, no logger) so the
-    // host tests can run it on Linux. The worker loop logs the save outcome through the return
-    // value, and a false write is reported there - the same warnings-as-strings discipline the
-    // mappings registry uses.
-    return save(g_save_name);
+    try {
+        // Deliberately no logger call: this file stays portable (no windows.h, no logger) so the
+        // host tests can run it on Linux. The worker loop logs the save outcome through the
+        // return value, and a false write is reported there - the same warnings-as-strings
+        // discipline the mappings registry uses.
+        char name[kSaveNameCapacity];
+        take_name(g_save_name_lock, g_save_name, name);
+        return save(name);
+    } catch (...) {
+        // A refused save beats an escape through the noexcept boundary.
+        return false;
+    }
 }
 
 void request_load(const char* name) noexcept {
     if (name == nullptr) {
         return;
     }
+    while (g_load_name_lock.test_and_set(std::memory_order_acquire)) {
+    }
     park_name(g_load_name, name);
+    g_load_name_lock.clear(std::memory_order_release);
     g_load_pending.store(true, std::memory_order_release);
 }
 
@@ -271,25 +353,37 @@ bool service_loads(LoadReport& out) noexcept {
     if (!pending) {
         return false;
     }
-    out = load(g_load_name);
+    char name[kSaveNameCapacity];
+    take_name(g_load_name_lock, g_load_name, name);
+    out = load(name);
     return true;
 }
 
 bool save(std::string_view name) noexcept {
-    const std::string contents = serialize();
-    if (contents.empty()) {
+    try {
+        const std::string contents = serialize();
+        if (contents.empty()) {
+            return false;
+        }
+        // The configs/ directory may not exist on the first boot; the store creates what it can.
+        return store().write(path_for(name), contents);
+    } catch (...) {
+        // Allocation failure during serialization or path building is a refused save, never an
+        // escape through a noexcept boundary on the worker thread.
         return false;
     }
-    // The configs/ directory may not exist on the first boot; the store creates what it can.
-    return store().write(path_for(name), contents);
 }
 
 LoadReport load(std::string_view name) noexcept {
-    std::string contents;
-    if (!store().read(path_for(name), contents)) {
-        return LoadReport{}; // first boot: defaults stay, nothing is an error
+    try {
+        std::string contents;
+        if (!store().read(path_for(name), contents)) {
+            return LoadReport{}; // first boot: defaults stay, nothing is an error
+        }
+        return deserialize(contents);
+    } catch (...) {
+        return LoadReport{}; // unreadable config means defaults, exactly like a missing one
     }
-    return deserialize(contents);
 }
 
 } // namespace woke::config

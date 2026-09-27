@@ -4,6 +4,8 @@
 
 #include <psapi.h>
 
+#include <atomic>
+
 #include "core/logger.h"
 
 namespace woke::jni {
@@ -17,11 +19,16 @@ using GetCreatedJavaVMsFn = jint(JNICALL*)(JavaVM**, jsize, jsize*);
 
 JavaVM* g_vm = nullptr;
 bool g_lookup_done = false;
-std::size_t g_attached_threads = 0;
+// Attach/detach happen on the thread whose counter moves while other threads report the total,
+// so the count is atomic too (QA F4).
+std::atomic<std::size_t> g_attached_threads{0};
 
-// ScopedLocalFrame bookkeeping (step 9, R-06). Plain integers incremented on the owning
-// thread; the soak line reads them once a minute, and a torn read on a counter is harmless.
-LocalFrameStats g_local_frames{};
+// ScopedLocalFrame bookkeeping (step 9, R-06). Atomics because frames are pushed on whatever
+// thread touches the JVM while the soak line reads the totals once a minute from another one
+// (QA F4): the counters are diagnostics, so relaxed ordering is enough.
+std::atomic<std::size_t> g_frames_pushed{0};
+std::atomic<std::size_t> g_frames_push_failed{0};
+std::atomic<std::size_t> g_frames_pop_failed{0};
 
 thread_local JNIEnv* t_env = nullptr;
 thread_local bool t_attached_by_us = false;
@@ -168,7 +175,7 @@ JNIEnv* current_env() noexcept {
 
     t_env = env;
     t_attached_by_us = true;
-    ++g_attached_threads;
+    g_attached_threads.fetch_add(1, std::memory_order_relaxed);
     return env;
 }
 
@@ -178,8 +185,9 @@ void detach_current_thread() noexcept {
     }
     if (t_attached_by_us && g_vm != nullptr) {
         (void)g_vm->DetachCurrentThread();
-        if (g_attached_threads > 0) {
-            --g_attached_threads;
+        const std::size_t before = g_attached_threads.load(std::memory_order_relaxed);
+        if (before > 0) {
+            g_attached_threads.store(before - 1, std::memory_order_relaxed);
         }
     }
     t_env = nullptr;
@@ -197,9 +205,9 @@ ScopedLocalFrame::ScopedLocalFrame(jint capacity) noexcept {
     }
     pushed_ = (env_->PushLocalFrame(capacity) == JNI_OK);
     if (pushed_) {
-        ++g_local_frames.pushed;
+        g_frames_pushed.fetch_add(1, std::memory_order_relaxed);
     } else {
-        ++g_local_frames.push_failed;
+        g_frames_push_failed.fetch_add(1, std::memory_order_relaxed);
         // A missing frame is a performance and leak concern, not a correctness one: JNI
         // still allocates the references, they are just not released as a block.
         WOKE_LOG_WARN("jvm: PushLocalFrame(%d) failed - continuing without a local frame",
@@ -210,14 +218,18 @@ ScopedLocalFrame::ScopedLocalFrame(jint capacity) noexcept {
 ScopedLocalFrame::~ScopedLocalFrame() noexcept {
     if (pushed_ && env_ != nullptr) {
         if (env_->PopLocalFrame(nullptr) != JNI_OK) {
-            ++g_local_frames.pop_failed;
+            g_frames_pop_failed.fetch_add(1, std::memory_order_relaxed);
             WOKE_LOG_WARN("jvm: PopLocalFrame failed - a local-reference frame was leaked");
         }
     }
 }
 
 LocalFrameStats local_frame_stats() noexcept {
-    return g_local_frames;
+    LocalFrameStats snapshot;
+    snapshot.pushed = g_frames_pushed.load(std::memory_order_relaxed);
+    snapshot.push_failed = g_frames_push_failed.load(std::memory_order_relaxed);
+    snapshot.pop_failed = g_frames_pop_failed.load(std::memory_order_relaxed);
+    return snapshot;
 }
 
 } // namespace woke::jni
