@@ -20,6 +20,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -403,11 +404,9 @@ void test_qa_hardening() {
         WOKE_CHECK(report.modules_matched == 1);
 
         // The sibling temp file the write went through is consumed, not left on disk.
-        std::FILE* leftover = std::fopen(temp.c_str(), "rb");
-        WOKE_CHECK(leftover == nullptr);
-        if (leftover != nullptr) {
-            (void)std::fclose(leftover);
-        }
+        // (std::ifstream, not std::fopen: MSVC deprecates plain fopen — C4996.)
+        std::ifstream leftover(temp, std::ios::binary);
+        WOKE_CHECK(!leftover.is_open());
 
         (void)std::remove(target.c_str());
         registry.reset();
